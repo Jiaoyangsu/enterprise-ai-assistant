@@ -1,15 +1,15 @@
-"""20 条业务查询基线测试（验证工具逻辑，非端到端）"""
-import json
-import subprocess
+"""20 条业务查询基线测试（回归验证，对齐新工具/新数据）"""
 import sys
 import importlib.util
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "mcp_servers"))
 
 
-def load_server(path):
-    """加载 server 模块而不启动网络"""
-    spec = importlib.util.spec_from_file_location("server", path)
+def load_server(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    # 防止 __main__ 块误触发
     spec.loader.exec_module(mod)
     return mod
 
@@ -30,54 +30,54 @@ class TestResults:
 
 def main():
     t = TestResults()
-    ops = load_server("mcp_servers/ops_server.py")
-    docs = load_server("mcp_servers/docs_server.py")
-    sec = load_server("mcp_servers/security_server.py")
+    ops = load_server("ops", ROOT / "mcp_servers/ops_server.py")
+    docs = load_server("docs", ROOT / "mcp_servers/docs_server.py")
+    sec = load_server("sec", ROOT / "mcp_servers/security_server.py")
 
     # ---- 员工信息 ----
-    r = ops.lookup_employee("张三")
-    t.check("员工-张三部门", r["found"] and r["department"] == "技术部", str(r))
+    r = ops.lookup_employee("陈志强")
+    t.check("员工-陈志强部门", r["found"] and r["department"] == "技术部", str(r))
 
     r = ops.lookup_employee("不存在的人")
     t.check("员工-未找到处理", not r["found"])
 
     # ---- 年假 ----
-    r = ops.get_leave_balance("李四")
-    t.check("年假-李四余额", r["leave_balance"] == 12, str(r))
+    r = ops.lookup_employee("刘洋")
+    t.check("年假-刘洋余额", r["leave_balance"] == 12, str(r))
 
     # ---- 部门/预算 ----
     r = ops.list_departments()
-    t.check("部门列表", "技术部" in r)
+    t.check("部门列表", r["count"] == 8, str(r["count"]))
 
     r = ops.query_budget("技术部")
-    t.check("预算-技术部", r["budget"] == 500, str(r))
+    t.check("预算-技术部", r["annual_budget"] == 500, str(r))
 
     r = ops.query_budget("不存在部门")
     t.check("预算-未找到", not r["found"])
 
     # ---- 客户(RBAC) ----
-    r = ops.get_customer_info("甲公司")  # 无角色
+    r = ops.get_customer_info("华宇科技")
     t.check("客户-无权限拦截", r["access"] == "denied")
 
-    r = ops.get_customer_info("甲公司", user_role="manager")
-    t.check("客户-有权限", r.get("found") and r["level"] == "VIP客户", str(r))
+    r = ops.get_customer_info("华宇科技", user_role="manager")
+    t.check("客户-有权限", r.get("found") and r["level"] == "VIP", str(r))
 
     # ---- 合同 ----
-    r = ops.query_contract_status("CT-2023-001")
-    t.check("合同-状态", r["found"] and r["status"] == "已审批")
+    r = ops.query_contract(contract_id="HT-2024-001")
+    t.check("合同-状态", r["found"] and r["status"] == "已签署", str(r))
 
     # ---- 知识库(RBAC) ----
     r = docs.search_knowledge_base("请假流程", is_authenticated=True)
-    t.check("知识库-公开检索", r["found"], r["message"])
+    t.check("知识库-内部检索", r["found"], r["message"])
 
     r = docs.search_knowledge_base("研发预算", is_authenticated=False)
-    t.check("知识库-机密未登录拦截", any(d["title"] == "技术部年度研发预算" for d in r["denied"]))
+    t.check("知识库-机密未登录拦截", any(d["title"] == "技术部年度研发预算细则" for d in r["denied"]))
 
     r = docs.search_knowledge_base("研发预算", user_department="技术部", is_authenticated=True)
-    t.check("知识库-机密本部门可见", any(x["title"] == "技术部年度研发预算" for x in r["results"]))
+    t.check("知识库-机密本部门可见", any(x["title"] == "技术部年度研发预算细则" for x in r["results"]))
 
     r = docs.search_knowledge_base("研发预算", user_department="财务部", is_authenticated=True)
-    t.check("知识库-机密异部门拦截", any(x["title"] == "技术部年度研发预算" for x in r["results"]) is False)
+    t.check("知识库-机密异部门拦截", any(x["title"] == "技术部年度研发预算细则" for x in r["results"]) is False)
 
     # ---- 脱敏 ----
     r = sec.redact_pii("手机号 13812345678，身份证 110101199001011234")
@@ -98,19 +98,19 @@ def main():
     t.check("存储清洗-PII去+风险标", r["pii_removed"] == 1 and not r["ready_for_storage"])
 
     # ---- 写入操作 ----
-    r = ops.create_leave_request("张三", "2024-01-08", "2024-01-09")
+    r = ops.create_leave_request("黄国栋", "2024-05-06", "2024-05-07")
     t.check("请假-提交成功", r["success"], r["message"])
 
-    r = ops.create_leave_request("张三", "2024-01-08", "2024-01-20")  # 超余额
+    r = ops.create_leave_request("张伟", "2024-05-06", "2024-05-20")  # 超余额
     t.check("请假-超额拒绝", not r["success"])
 
-    r = ops.create_ticket("王五", "API 服务异常", priority="紧急")
+    r = ops.create_ticket("王强", "线上服务异常", priority="紧急")
     t.check("工单-创建成功", r["success"] and r["ticket_id"].startswith("TK-"))
 
-    print(f"\n结果：{t.passed}/20 通过，{t.failed}/20 失败")
+    print(f"\n结果：{t.passed}/{t.passed + t.failed} 通过，{t.failed} 失败")
     for n in t.notes:
         print(f"  {n}")
-    sys.exit(0 if t.failed == 0 else 1)
+    sys.exit(1 if t.failed else 0)
 
 
 if __name__ == "__main__":

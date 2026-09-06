@@ -33,10 +33,21 @@ pip install fastmcp
   - 复制到 `~/.dsh/profiles/web/cordis.patch.yml`
   - Persona 复制到 `~/.dsh/.agent-presets/enterprise/persona`
 
-## 工具清单
+## 工具清单（11 个）
 
-详见各 server 内 `@mcp.tool()` 装饰器。
+- **Ops (8002)**：`lookup_employee`(员工+年假合并) `query_budget` `list_departments` `get_customer_info`(RBAC) `query_contract` `create_leave_request` `create_ticket`
+- **Docs (8001)**：`search_knowledge_base`(TF-IDF + RBAC 密级拦截)
+- **Security (8003)**：`redact_pii` `risk_review_text` `sanitize_for_storage`
 
-## 基线测试
+## 业务数据
 
-`tests/test_baseline.py` — 20 条业务查询基线。
+`mcp_servers/data.py` — 8 部门 / 30 员工 / 年度预算 / 客户 / 合同 / 9 篇知识库文档（含密级）。
+
+## 测试集
+
+- `tests/test_baseline.py` — 21 条逻辑回归基线
+- `tests/test_questions.py` — 6 组 × 5 道 = 30 题（复杂度 L1~L5）
+- `tests/router.py` — 混合路由规则引擎
+- `tests/run_suite.py` — 30 题路由命中 + 实际工具调用验证
+
+运行：`.venv/bin/python tests/run_suite.py`
