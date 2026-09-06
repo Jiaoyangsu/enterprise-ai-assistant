@@ -1,0 +1,16 @@
+- insert:
+  - id: mcp-docs
+    name: '@deepseek-ai/dsh-mcp-client'
+    config:
+      serverName: docs
+      url: http://127.0.0.1:8001/mcp
+  - id: mcp-ops
+    name: '@deepseek-ai/dsh-mcp-client'
+    config:
+      serverName: ops
+      url: http://127.0.0.1:8002/mcp
+  - id: mcp-security
+    name: '@deepseek-ai/dsh-mcp-client'
+    config:
+      serverName: security
+      url: http://127.0.0.1:8003/mcp
