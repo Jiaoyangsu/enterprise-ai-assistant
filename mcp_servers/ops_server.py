@@ -11,6 +11,7 @@ from data import (
     DEPARTMENTS,
     EMPLOYEES,
     BUDGETS,
+    BG_BUDGETS,
     CUSTOMERS,
     CONTRACTS,
 )
@@ -39,15 +40,29 @@ def lookup_employee(name: str) -> dict:
 
 
 @mcp.tool()
-def query_budget(department: str) -> dict:
-    """查询部门年度预算（万元）、已用、剩余。只读操作。
-    场景示例：'技术部预算多少？' '技术部预算花了多少？' '还有多少预算可用？'"""
+def query_budget(department: str = "", group: str = "") -> dict:
+    """查询部门或事业的年度预算（万元）、已用、剩余。只读操作。
+    支持按部门名（技术部/销售部/...）或事业群（技术研发群/市场销售群/运营交付群/职能支持群）查询。
+    场景示例：'技术部预算多少？' '技术研发群年度预算？' '运维部预算花了多少？'"""
+    if group:
+        bg = BG_BUDGETS.get(group)
+        if not bg:
+            return {"found": False, "message": f"未找到事业群：{group}"}
+        return {
+            "found": True,
+            "group": group,
+            "annual_budget": bg["annual"],
+            "spent": bg["spent"],
+            "remaining": bg["remaining"],
+            "unit": "万元",
+        }
     bud = BUDGETS.get(department)
     if not bud:
         return {"found": False, "message": f"未找到部门：{department}"}
     return {
         "found": True,
         "department": department,
+        "bg": bud.get("bg", ""),
         "annual_budget": bud["annual"],
         "spent": bud["spent"],
         "remaining": bud["remaining"],
@@ -58,13 +73,18 @@ def query_budget(department: str) -> dict:
 
 @mcp.tool()
 def list_departments() -> dict:
-    """列出全部部门、部门负责人、人数。只读操作。
-    场景示例：'公司有哪些部门？' '技术部经理是谁？'"""
+    """列出全部事业群与部门、负责人、人数。只读操作。
+    场景示例：'公司有哪些部门？' '技术部经理是谁？' '公司分几个事业群？'"""
     return {
         "found": True,
         "count": len(DEPARTMENTS),
         "departments": [
-            {"name": d["name"], "manager": d["manager"], "headcount": d["headcount"]}
+            {
+                "name": d["name"],
+                "bg": d["bg"],
+                "manager": d["manager"],
+                "headcount": d["headcount"],
+            }
             for d in DEPARTMENTS
         ],
     }

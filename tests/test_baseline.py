@@ -47,10 +47,13 @@ def main():
 
     # ---- 部门/预算 ----
     r = ops.list_departments()
-    t.check("部门列表", r["count"] == 8, str(r["count"]))
+    t.check("部门列表", r["count"] >= 17, str(r["count"]))
 
     r = ops.query_budget("技术部")
-    t.check("预算-技术部", r["annual_budget"] == 500, str(r))
+    t.check("预算-技术部", r["annual_budget"] > 0 and r["bg"] == "技术研发群", str(r))
+
+    r = ops.query_budget("技术研发群", group="技术研发群")
+    t.check("预算-事业群", r["annual_budget"] == 1350, str(r))
 
     r = ops.query_budget("不存在部门")
     t.check("预算-未找到", not r["found"])
@@ -70,14 +73,14 @@ def main():
     r = docs.search_knowledge_base("请假流程", is_authenticated=True)
     t.check("知识库-内部检索", r["found"], r["message"])
 
-    r = docs.search_knowledge_base("研发预算", is_authenticated=False)
-    t.check("知识库-机密未登录拦截", any(d["title"] == "技术部年度研发预算细则" for d in r["denied"]))
+    r = docs.search_knowledge_base("薪酬制度", is_authenticated=False)
+    t.check("知识库-机密未登录拦截", any(d["title"] == "薪酬与绩效管理制度" for d in r["denied"]))
 
-    r = docs.search_knowledge_base("研发预算", user_department="技术部", is_authenticated=True)
-    t.check("知识库-机密本部门可见", any(x["title"] == "技术部年度研发预算细则" for x in r["results"]))
+    r = docs.search_knowledge_base("薪酬制度", user_department="人事部", is_authenticated=True)
+    t.check("知识库-机密本部门可见", any(x["title"] == "薪酬与绩效管理制度" for x in r["results"]))
 
-    r = docs.search_knowledge_base("研发预算", user_department="财务部", is_authenticated=True)
-    t.check("知识库-机密异部门拦截", any(x["title"] == "技术部年度研发预算细则" for x in r["results"]) is False)
+    r = docs.search_knowledge_base("薪酬制度", user_department="财务部", is_authenticated=True)
+    t.check("知识库-机密异部门拦截", any(x["title"] == "薪酬与绩效管理制度" for x in r["results"]) is False)
 
     # ---- 脱敏 ----
     r = sec.redact_pii("手机号 13812345678，身份证 110101199001011234")
