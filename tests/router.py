@@ -12,10 +12,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp_servers"))
 
 
 def route(question: str) -> str:
-    """返回问题应路由到的工具名。若无法判断返回 'unknown'。"""
+    """返回问题应路由到的工具名。若无法判断返回 'unknown'。返回 'refuse' 表示应拒绝/不查工具。"""
     q = question
 
-    # 写入操作优先判断（副作用铁律字段）
+    # ---- 越界/敏感/离题：明确拒绝，不打工具 ----
+    # 天气
+    if any(w in q for w in ["天气", "下雨", "气温", "下雨天", "带伞"]):
+        return "refuse"
+    # 股票涨跌预测
+    if any(w in q for w in ["股票", "涨跌", "预测", "买什么股"]):
+        return "refuse"
+    # 打听他人隐私（为什么没上班/薪资/工资）
+    if any(w in q for w in ["为啥没上班", "为什么没来", "今天没来", "同事的工资", "同事的薪资", "别人的工资", "别人薪资"]):
+        return "refuse"
+    # 本人薪资对比/最低最高（薪酬敏感，无权横向比较）
+    if ("薪资" in q or "工资" in q) and any(w in q for w in ["最低", "最高", "低吗", "高吗", "排第几", "垫底"]):
+        return "refuse"
+
+    # ---- 写入操作优先判断（副作用铁律字段） ----
     triggers_write_leave = ["提交", "申请年假", "申请事假", "请假的申请"]
     if any(t in q for t in triggers_write_leave) and ("请假" in q or "年假" in q or "事假" in q):
         if any(t in q for t in ["月", "日", "-", "到"]):
