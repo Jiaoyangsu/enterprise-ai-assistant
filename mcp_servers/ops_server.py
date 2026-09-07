@@ -89,7 +89,9 @@ def query_contract(contract_id: str = "", customer: str = "") -> dict:
     if not contract_id and not customer:
         return {"found": False, "message": "请输入合同号或客户名称"}
 
-    contracts = list(CONTRACTS.values()) if not contract_id else []
+    contracts = [
+        {"contract_id": cid, **c} for cid, c in CONTRACTS.items()
+    ] if not contract_id else []
     if contract_id:
         c = CONTRACTS.get(contract_id)
         return {

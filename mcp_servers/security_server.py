@@ -23,7 +23,7 @@ def redact_pii(text: str) -> dict:
         count += 1
         return re.sub(r"(\d{3})\d{4}(\d{4})", r"\1****\2", m.group(0))
 
-    redacted = re.sub(r"\b1[3-9]\d{9}\b", mask_phone, redacted)
+    redacted = re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", mask_phone, redacted)
 
     # 身份证：110101199001011234 -> 110101********1234
     def mask_id(m):
@@ -31,7 +31,7 @@ def redact_pii(text: str) -> dict:
         count += 1
         return re.sub(r"(\d{6})\d{8}(\d{4})", r"\1********\2", m.group(0))
 
-    redacted = re.sub(r"\b\d{17}[\dXx]\b", mask_id, redacted)
+    redacted = re.sub(r"(?<!\d)(\d{17}[\dXx])(?!\d)", mask_id, redacted)
 
     return {"original": text, "redacted": redacted, "count": count}
 
