@@ -32,7 +32,8 @@ TOOLS = {
     "query_budget": {"fn": _ops.query_budget, "args": {"department": "str(可选，缺省则用 group)", "group": "str(可选)"}},
     "list_departments": {"fn": _ops.list_departments, "args": {}},
     "get_customer_info": {"fn": _ops.get_customer_info, "args": {"customer_name": "str", "user_role": "str(admin/manager/空)"}},
-    "query_contract": {"fn": _ops.query_contract, "args": {"contract_id": "str(可选)", "customer": "str(可选)"}},
+    "list_customers": {"fn": _ops.list_customers, "args": {"industry": "str(可选，行业筛选，如'跨境电商')", "user_role": "str(admin/manager/空)"}},
+    "query_contract": {"fn": _ops.query_contract, "args": {"contract_id": "str(可选)", "customer": "str(可选)", "status": "str(可选，合同状态，如'审批中')"}},
     "create_leave_request": {"fn": _ops.create_leave_request, "args": {"name": "str(员工姓名，'我/我的'=刘洋)", "start_date": "str(YYYY-MM-DD)", "end_date": "str(YYYY-MM-DD)"}},
     "create_ticket": {"fn": _ops.create_ticket, "args": {"requester": "str", "title": "str", "description": "str(可选)", "priority": "str(可选)"}},
     "search_knowledge_base": {"fn": _docs.search_knowledge_base, "args": {"query": "str", "is_authenticated": "bool", "user_department": "str(部门名，或 HR/IT)"}},
@@ -55,7 +56,9 @@ SYSTEM = """你是企业知识库 AI 助手。你通过调用工具获取真实�
 - 部门经理/事业群/公司部门一览 → list_departments
 - 部门或事业群预算/已用/剩余 → query_budget
 - 客户（华宇科技/天穹金融/蓝海能源…）的行业/等级/联系人/信用/合同额 → get_customer_info
+- 客户列表/按行业筛选（'有哪些客户？' '做跨境电商的客户？'） → list_customers
 - 合同号(HT-xxxx)或客户名查合同状态/金额/负责人 → query_contract
+- 合同按状态列出（'审批中的合同有哪些？'） → query_contract(status='审批中')
 - 提交/申请请假 → create_leave_request
 - 制度条文内容（请假流程、差旅报销、加班调休、网盘违规处罚…） → search_knowledge_base
 - 手机号/身份证脱敏 → redact_pii；敏感词风险检查 → risk_review_text；脱敏+风险检查两步 → sanitize_for_storage
@@ -139,6 +142,7 @@ def run_tool(name: str, args: dict, ctx: dict) -> str:
         "customer_name": ["customer", "客户", "company", "company_name"],
         "department": ["dept", "部门", "department_name", "dept_name", "departmentName"],
         "group": ["事业群", "bg", "bg_name", "group_name"],
+        "status": ["合同状态", "状态", "stage", "contract_status"],
         "contract_id": ["contract", "contract_number", "contract_no", "合同号", "合同编号", "contractId"],
         "start_date": ["from", "start", "开始日期", "startDate"],
         "end_date": ["to", "end", "结束日期", "endDate"],
@@ -155,7 +159,7 @@ def run_tool(name: str, args: dict, ctx: dict) -> str:
                     resolved[p] = args[alias]
                     break
     # 客户信息：已登录用户按 manager 处理；未登录保持空角色（会被拒）
-    if name == "get_customer_info" and "user_role" not in resolved:
+    if name in ("get_customer_info", "list_customers") and "user_role" not in resolved:
         resolved["user_role"] = "manager" if ctx["is_authenticated"] else ""
     # 知识库：注入登录态与所属部门（与 baseline parse_context 一致）
     if name == "search_knowledge_base":
