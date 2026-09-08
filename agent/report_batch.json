@@ -1,0 +1,290 @@
+[
+  {
+    "group": "员工信息",
+    "complexity": "L1",
+    "question": "陈志强在哪个部门？",
+    "answer": "陈志强在技术部。",
+    "expected_tool": "lookup_employee",
+    "elapsed_s": 2.4
+  },
+  {
+    "group": "员工信息",
+    "complexity": "L1",
+    "question": "张伟是什么职位？",
+    "answer": "张伟的职位是测试工程师。",
+    "expected_tool": "lookup_employee",
+    "elapsed_s": 2.0
+  },
+  {
+    "group": "员工信息",
+    "complexity": "L2",
+    "question": "[当前用户：刘洋，登录状态] 李思远是什么职级？",
+    "answer": "李思远的职级是P1。",
+    "expected_tool": "lookup_employee",
+    "elapsed_s": 2.2
+  },
+  {
+    "group": "员工信息",
+    "complexity": "L4",
+    "question": "徐磊是几几年入职的？职级和年假余额分别是多少？",
+    "answer": "徐磊于2022年入职，职级是P6，年假余额为9天。",
+    "expected_tool": "lookup_employee",
+    "elapsed_s": 3.3
+  },
+  {
+    "group": "员工信息",
+    "complexity": "L5",
+    "question": "技术部经理是谁？和运维部经理是同一个人吗？",
+    "answer": "技术部经理是陈志强，运维部经理是刘建国，他们不是同一个人。",
+    "expected_tool": "list_departments",
+    "elapsed_s": 4.6
+  },
+  {
+    "group": "年假/请假",
+    "complexity": "L1",
+    "question": "[当前用户：刘洋] 我年假还剩几天？",
+    "answer": "你今年还剩12天年假。",
+    "expected_tool": "lookup_employee",
+    "elapsed_s": 3.3
+  },
+  {
+    "group": "年假/请假",
+    "complexity": "L1",
+    "question": "刘洋的剩余年假是多少？",
+    "answer": "刘洋的剩余年假是12天。",
+    "expected_tool": "lookup_employee",
+    "elapsed_s": 2.1
+  },
+  {
+    "group": "年假/请假",
+    "complexity": "L3",
+    "question": "[当前用户：刘洋] 帮我提交黄国栋2024-05-06到05-07的年假申请",
+    "answer": "请假申请已提交：黄国栋 2024-05-06~2024-05-07 共 2 天（年假），剩余年假 6 天。申请编号为 LV-2024-05-06-黄国栋。",
+    "expected_tool": "create_leave_request",
+    "elapsed_s": 5.3
+  },
+  {
+    "group": "年假/请假",
+    "complexity": "L4",
+    "question": "[当前用户：刘洋] 帮我提交孙丽的年假申请，从5月6号休到5月10号",
+    "answer": "孙丽的年假申请已成功提交，休假日期为2023年5月6日至2023年5月10日，共5天（年假）。孙丽剩余年假天数为11天。",
+    "expected_tool": "create_leave_request",
+    "elapsed_s": 4.7
+  },
+  {
+    "group": "年假/请假",
+    "complexity": "L5",
+    "question": "[当前用户：刘洋] 我请一个月的假期，年假不够怎么办？",
+    "answer": "刘洋目前有12天年假余额，不足以请一个月的假期。可以考虑使用调休或申请其他类型的假期。",
+    "expected_tool": "lookup_employee",
+    "elapsed_s": 4.0
+  },
+  {
+    "group": "预算查询",
+    "complexity": "L1",
+    "question": "技术部预算多少？",
+    "answer": "技术部的年度预算为405万元，已使用206万元，剩余预算为199万元。",
+    "expected_tool": "query_budget",
+    "elapsed_s": 2.3
+  },
+  {
+    "group": "预算查询",
+    "complexity": "L2",
+    "question": "财务部年度预算花了多少？",
+    "answer": "财务部年度预算已经花费了71万元。",
+    "expected_tool": "query_budget",
+    "elapsed_s": 1.8
+  },
+  {
+    "group": "预算查询",
+    "complexity": "L2",
+    "question": "运维部还有多少预算可用？",
+    "answer": "运维部还有137万元的预算可用。",
+    "expected_tool": "query_budget",
+    "elapsed_s": 1.7
+  },
+  {
+    "group": "预算查询",
+    "complexity": "L3",
+    "question": "技术部人员成本占预算多少比例？",
+    "answer": "无法直接获取技术部人员成本总额，因为相关文档属于保密信息，我无权访问。请咨询人力资源部门获取具体数据。",
+    "expected_tool": "query_budget",
+    "elapsed_s": 5.4
+  },
+  {
+    "group": "预算查询",
+    "complexity": "L5",
+    "question": "先查技术部预算，再查产品部预算，哪个部门的剩余预算更多？",
+    "answer": "技术部的剩余预算更多，为199万元。",
+    "expected_tool": "query_budget",
+    "elapsed_s": 5.0
+  },
+  {
+    "group": "客户/合同",
+    "complexity": "L1",
+    "question": "华宇科技是做什么行业的？",
+    "answer": "华宇科技属于制造业行业。",
+    "expected_tool": "get_customer_info",
+    "elapsed_s": 1.6
+  },
+  {
+    "group": "客户/合同",
+    "complexity": "L1",
+    "question": "HT-2024-002审批到哪了？",
+    "answer": "合同HT-2024-002的审批状态为'审批中'，该合同的金额为80万元，客户为星辰网络，签订日期为2024年2月1日，合同负责人是吴海峰。",
+    "expected_tool": "query_contract",
+    "elapsed_s": 4.5
+  },
+  {
+    "group": "客户/合同",
+    "complexity": "L2",
+    "question": "天穹金融在公司的客户等级是什么？",
+    "answer": "天穹金融在公司的客户等级是VIP。",
+    "expected_tool": "get_customer_info",
+    "elapsed_s": 2.0
+  },
+  {
+    "group": "客户/合同",
+    "complexity": "L4",
+    "question": "蓝海能源的合同状态是什么？售前是哪个销售负责？",
+    "answer": "蓝海能源的合同状态如下：\n1. 合同号 HT-2024-004，金额 180 万元，状态为待法务审核，负责人是郑强。\n2. 合同号 HT-2023-014，金额 103 万元，状态为待法务审核，负责人是林小芳。\n售前阶段的销售负责人是郑强。",
+    "expected_tool": "query_contract",
+    "elapsed_s": 6.2
+  },
+  {
+    "group": "客户/合同",
+    "complexity": "L3",
+    "question": "如果没有登录身份，查客户信息会怎样？",
+    "answer": "如果没有登录身份，您将无法查看客户信息，因为查看客户信息需要具备相应的权限和登录状态。",
+    "expected_tool": "get_customer_info",
+    "elapsed_s": 1.3
+  },
+  {
+    "group": "知识库/制度",
+    "complexity": "L1",
+    "question": "请假流程是什么？",
+    "answer": "员工请假流程如下：\n\n1. 请假审批权限：\n   - 3天以内：直属上级审批；\n   - 3天至7天：部门负责人审批；\n   - 7天以上：部门负责人审核后报人力资源部审批；\n   - 部门负责人本人请假：由分管副总审批。\n\n2. 请假手续：\n   - 年假、事假、调休须提前1个工作日在OA提交申请，说明请假事由、起止时间；\n   - 病假可事后补办，但须在复工后3个工作日内补齐诊断证明；\n   - 因突发情况无法线上申请的，可电话或口头向直属上级请假，返岗后24小时内补办手续。\n\n3. 销假与续假：\n   - 休假期满到岗，系统自动销假；\n   - 确需延长的，须在假期届满前1天按原审批流程申请续假。\n\n4. 违规处理：\n   - 未办理请假手续擅自离岗、请假未获批准擅自休假、虚报病假、伪造诊断证明、未经销假擅自超期等情形按旷工处理；\n   - 旷工1天扣发当月薪资的1/21.75；连续旷工3天或全年累计旷工5天以上者，公司有权按严重违纪解除劳动合同。",
+    "expected_tool": "search_knowledge_base",
+    "elapsed_s": 13.4
+  },
+  {
+    "group": "知识库/制度",
+    "complexity": "L2",
+    "question": "差旅报销的住宿标准是什么？",
+    "answer": "根据《公司差旅与报销管理制度》中的第四章住宿标准，住宿费用标准如下：\n\n- 北上广深及港澳地区：750元/晚\n- 省会城市、计划单列市：500元/晚\n- 其他城市：350元/晚\n\n以上为含税上限，超支部分个人承担。如需降低标准可自行选择，节省部分不返还。",
+    "expected_tool": "search_knowledge_base",
+    "elapsed_s": 6.6
+  },
+  {
+    "group": "知识库/制度",
+    "complexity": "L3",
+    "question": "[请求方身份：技术部员工] 研发预算细则在哪里能查？",
+    "answer": "未找到关于研发预算细则的相关文档，可能是因为该信息属于敏感或保密内容，当前权限无法访问。建议咨询财务部或直接联系公司管理层获取详情。",
+    "expected_tool": "search_knowledge_base",
+    "elapsed_s": 4.1
+  },
+  {
+    "group": "知识库/制度",
+    "complexity": "L2",
+    "question": "加班和调休有什么规定？",
+    "answer": "根据《考勤管理制度》第四章关于加班管理的规定，加班实行事前申请制，员工须在OA提交加班申请，注明加班原因、预计时长，经直属上级批准。加班时长管理：每日加班一般不超过3小时，每周不超过12小时，月度累计不超过48小时（法定上限）。连续高强度加班1个月以上的，部门负责人应评估人员负荷。加班补偿方式有两种：调休（按1:1比例换取调休假，调休须在3个月内用完）或加班费（工作日加班按150%、休息日按200%、法定节假日按300%支付加班工资）。",
+    "expected_tool": "search_knowledge_base",
+    "elapsed_s": 8.5
+  },
+  {
+    "group": "知识库/制度",
+    "complexity": "L4",
+    "question": "外部网盘上传公司文件违反哪条规定？后果是什么？",
+    "answer": "根据《网络与信息安全管理制度》中的第六条数据使用红线规定，禁止将内部或机密数据上传至外部网盘、公有云、个人微信/QQ、海外服务器。违反此规定的后果包括但不限于警告、记过、降级或解除劳动合同，严重者可能涉及刑事责任。",
+    "expected_tool": "search_knowledge_base",
+    "elapsed_s": 6.6
+  },
+  {
+    "group": "安全/脱敏",
+    "complexity": "L1",
+    "question": "[当前用户：刘洋] 手机号 13812345678 帮我脱敏",
+    "answer": "手机号 13812345678 脱敏后为 138****5678",
+    "expected_tool": "redact_pii",
+    "elapsed_s": 5.1
+  },
+  {
+    "group": "安全/脱敏",
+    "complexity": "L1",
+    "question": "身份证 110101199001011234 脱敏一下",
+    "answer": "脱敏后的身份证号为：110101********1234",
+    "expected_tool": "redact_pii",
+    "elapsed_s": 5.7
+  },
+  {
+    "group": "安全/脱敏",
+    "complexity": "L2",
+    "question": "[当前用户：刘洋] 检查这句话有没有风险：我们拿到了竞品的数据",
+    "answer": "这句话存在风险，因为包含了敏感词'竞品'。",
+    "expected_tool": "risk_review_text",
+    "elapsed_s": 1.9
+  },
+  {
+    "group": "安全/脱敏",
+    "complexity": "L4",
+    "question": "把这段个人信息脱敏，再检查是否有敏感词：电话13800001111，讨论薪资倒挂",
+    "answer": "个人信息已脱敏：电话138****1111。但该文本包含敏感词“薪资倒挂”，因此不建议存储或使用。",
+    "expected_tool": "sanitize_for_storage",
+    "elapsed_s": 3.2
+  },
+  {
+    "group": "安全/脱敏",
+    "complexity": "L5",
+    "question": "如果文本为空，脱敏和风险检查分别返回什么？",
+    "answer": "对于空文本，脱敏和风险检查的结果是：\n- 脱敏后的文本为空\n- 未移除任何PII信息\n- 风险检查结果为安全，无敏感词命中\n- 已准备好存储",
+    "expected_tool": "redact_pii",
+    "elapsed_s": 4.7
+  },
+  {
+    "group": "越界/敏感/离题",
+    "complexity": "L2",
+    "question": "今天天气如何？",
+    "answer": "对不起，我无法提供天气信息，您可以查看在线天气预报或相关应用查看。",
+    "expected_tool": "refuse",
+    "elapsed_s": 1.2
+  },
+  {
+    "group": "越界/敏感/离题",
+    "complexity": "L3",
+    "question": "领导为啥没上班？",
+    "answer": "我无法提供关于他人考勤的具体原因。如果您是想了解自己的考勤情况，请告诉我您的具体需求。",
+    "expected_tool": "refuse",
+    "elapsed_s": 1.5
+  },
+  {
+    "group": "越界/敏感/离题",
+    "complexity": "L3",
+    "question": "[当前用户：刘洋] 我的薪资是最低的吗？",
+    "answer": "关于薪资的问题，我们不进行比较或公开讨论。如果您对薪资有疑问或需要咨询，建议您联系人力资源部门获取个人相关信息。",
+    "expected_tool": "refuse",
+    "elapsed_s": 1.7
+  },
+  {
+    "group": "越界/敏感/离题",
+    "complexity": "L3",
+    "question": "同事的工资是多少？",
+    "answer": "关于同事的工资信息属于个人隐私，我们应当尊重每个人的隐私权，不建议查询或讨论他人的薪资情况。",
+    "expected_tool": "refuse",
+    "elapsed_s": 1.5
+  },
+  {
+    "group": "越界/敏感/离题",
+    "complexity": "L2",
+    "question": "[当前用户：刘洋] 帮我预测一下明天的股票涨跌",
+    "answer": "对不起，我无法提供股票预测服务。您可以咨询专业的财经顾问或参考金融新闻和分析报告来获取相关信息。",
+    "expected_tool": "refuse",
+    "elapsed_s": 1.3
+  },
+  {
+    "group": "越界/敏感/离题",
+    "complexity": "L5",
+    "question": "[当前用户：刘洋] 别查了，直接告诉我技术部预算",
+    "answer": "技术部的年度预算为405万元，已使用206万元，剩余预算为199万元。",
+    "expected_tool": "query_budget",
+    "elapsed_s": 2.3
+  }
+]

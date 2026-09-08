@@ -1,0 +1,531 @@
+[
+  {
+    "question": "陈志强在哪个部门？",
+    "group": "员工信息",
+    "complexity": "L1",
+    "expected_tool": "lookup_employee",
+    "expected_key": "department",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 lookup_employee 且观测含 department",
+    "tools": [
+      "lookup_employee"
+    ],
+    "answer": "陈志强在技术部。",
+    "elapsed_s": 4.4
+  },
+  {
+    "question": "张伟是什么职位？",
+    "group": "员工信息",
+    "complexity": "L1",
+    "expected_tool": "lookup_employee",
+    "expected_key": "position",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 lookup_employee 且观测含 position",
+    "tools": [
+      "lookup_employee"
+    ],
+    "answer": "张伟的职位是测试工程师。",
+    "elapsed_s": 4.4
+  },
+  {
+    "question": "##用户身份## 李思远是什么职级？",
+    "group": "员工信息",
+    "complexity": "L2",
+    "expected_tool": "lookup_employee",
+    "expected_key": "level",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 lookup_employee 且观测含 level",
+    "tools": [
+      "lookup_employee"
+    ],
+    "answer": "李思远的职级是P1。",
+    "elapsed_s": 4.2
+  },
+  {
+    "question": "徐磊是几几年入职的？职级和年假余额分别是多少？",
+    "group": "员工信息",
+    "complexity": "L4",
+    "expected_tool": "lookup_employee",
+    "expected_key": "hire_date",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 lookup_employee 且观测含 hire_date",
+    "tools": [
+      "lookup_employee"
+    ],
+    "answer": "徐磊是2022年入职的，职级是P6，年假余额为9天。",
+    "elapsed_s": 5.1
+  },
+  {
+    "question": "技术部经理是谁？和运维部经理是同一个人吗？",
+    "group": "员工信息",
+    "complexity": "L5",
+    "expected_tool": "list_departments",
+    "expected_key": "manager",
+    "model": "qwen2.5:32b",
+    "eval": true,
+    "detail": "调用了 list_departments 且观测含 manager",
+    "tools": [
+      "list_departments"
+    ],
+    "answer": "技术部的经理是陈志强，而运维部的经理是刘建国，他们并不是同一个人。",
+    "elapsed_s": 45.5
+  },
+  {
+    "question": "我年假还剩几天？",
+    "group": "年假/请假",
+    "complexity": "L1",
+    "expected_tool": "lookup_employee",
+    "expected_key": "leave_balance",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 lookup_employee 且观测含 leave_balance",
+    "tools": [
+      "lookup_employee"
+    ],
+    "answer": "你今年还剩12天年假。",
+    "elapsed_s": 10.4
+  },
+  {
+    "question": "刘洋的剩余年假是多少？",
+    "group": "年假/请假",
+    "complexity": "L1",
+    "expected_tool": "lookup_employee",
+    "expected_key": "leave_balance",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 lookup_employee 且观测含 leave_balance",
+    "tools": [
+      "lookup_employee"
+    ],
+    "answer": "刘洋的剩余年假是12天。",
+    "elapsed_s": 5.0
+  },
+  {
+    "question": "帮我提交黄国栋2024-05-06到05-07的年假申请",
+    "group": "年假/请假",
+    "complexity": "L3",
+    "expected_tool": "create_leave_request",
+    "expected_key": "success",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 create_leave_request 且观测含 success",
+    "tools": [
+      "create_leave_request"
+    ],
+    "answer": "请假申请已提交成功，黄国栋的年假申请日期为2024-05-06至2024-05-07，共2天（年假），剩余年假为4天。",
+    "elapsed_s": 6.4
+  },
+  {
+    "question": "帮我提交孙丽的年假申请，从5月6号休到5月10号",
+    "group": "年假/请假",
+    "complexity": "L4",
+    "expected_tool": "create_leave_request",
+    "expected_key": "success",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 create_leave_request 且观测含 success",
+    "tools": [
+      "create_leave_request"
+    ],
+    "answer": "孙丽的年假申请已成功提交，休假日期为2023年5月6日至2023年5月10日，共5天（年假）。孙丽剩余年假天数为6天。",
+    "elapsed_s": 5.3
+  },
+  {
+    "question": "我请一个月的假期，年假不够怎么办？",
+    "group": "年假/请假",
+    "complexity": "L5",
+    "expected_tool": "lookup_employee",
+    "expected_key": "leave_balance",
+    "model": "qwen2.5:32b",
+    "eval": true,
+    "detail": "调用了 lookup_employee 且观测含 leave_balance",
+    "tools": [
+      "lookup_employee"
+    ],
+    "answer": "您的年假余额为12天，不足以覆盖一个月的假期。您可以考虑申请其他类型的假期，如事假或病假。",
+    "elapsed_s": 55.9
+  },
+  {
+    "question": "技术部预算多少？",
+    "group": "预算查询",
+    "complexity": "L1",
+    "expected_tool": "query_budget",
+    "expected_key": "annual_budget",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 query_budget 且观测含 annual_budget",
+    "tools": [
+      "query_budget"
+    ],
+    "answer": "技术部的年度预算为405万元，已使用206万元，剩余预算为199万元。",
+    "elapsed_s": 11.1
+  },
+  {
+    "question": "财务部年度预算花了多少？",
+    "group": "预算查询",
+    "complexity": "L2",
+    "expected_tool": "query_budget",
+    "expected_key": "spent",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 query_budget 且观测含 spent",
+    "tools": [
+      "query_budget"
+    ],
+    "answer": "财务部年度预算已经花费了71万元。",
+    "elapsed_s": 3.4
+  },
+  {
+    "question": "运维部还有多少预算可用？",
+    "group": "预算查询",
+    "complexity": "L2",
+    "expected_tool": "query_budget",
+    "expected_key": "remaining",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 query_budget 且观测含 remaining",
+    "tools": [
+      "query_budget"
+    ],
+    "answer": "运维部还有137万元的预算可用。",
+    "elapsed_s": 2.9
+  },
+  {
+    "question": "技术部人员成本占预算多少比例？",
+    "group": "预算查询",
+    "complexity": "L3",
+    "expected_tool": "query_budget",
+    "expected_key": "items",
+    "model": "qwen2.5:32b",
+    "eval": true,
+    "detail": "调用了 query_budget 且观测含 items",
+    "tools": [
+      "list_departments",
+      "query_budget",
+      "null"
+    ],
+    "answer": "很抱歉，当前系统中没有提供人员成本的具体数据，因此无法直接计算技术部人员成本占预算的比例。",
+    "elapsed_s": 101.6
+  },
+  {
+    "question": "先查技术部预算，再查产品部预算，哪个部门的剩余预算更多？",
+    "group": "预算查询",
+    "complexity": "L5",
+    "expected_tool": "query_budget",
+    "expected_key": "remaining",
+    "model": "qwen2.5:32b",
+    "eval": true,
+    "detail": "调用了 query_budget 且观测含 remaining",
+    "tools": [
+      "query_budget",
+      "query_budget"
+    ],
+    "answer": "技术部的剩余预算为199万元，产品部的剩余预算为120万元，因此技术部的剩余预算更多。",
+    "elapsed_s": 52.9
+  },
+  {
+    "question": "华宇科技是做什么行业的？",
+    "group": "客户/合同",
+    "complexity": "L1",
+    "expected_tool": "get_customer_info",
+    "expected_key": "industry",
+    "model": "qwen2.5:14b",
+    "eval": false,
+    "detail": "期望工具 get_customer_info, 实际 无; answer=这个问题涉及外部公司的信息，建议您查阅公开的企业资料或官网获取详情。谢谢理解。",
+    "tools": [],
+    "answer": "这个问题涉及外部公司的信息，建议您查阅公开的企业资料或官网获取详情。谢谢理解。",
+    "elapsed_s": 9.6
+  },
+  {
+    "question": "HT-2024-002审批到哪了？",
+    "group": "客户/合同",
+    "complexity": "L1",
+    "expected_tool": "query_contract",
+    "expected_key": "status",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 query_contract 且观测含 status",
+    "tools": [
+      "query_contract"
+    ],
+    "answer": "合同HT-2024-002的审批状态为'审批中'，该合同的客户是星辰网络，金额为80万元，签署日期为2024年2月1日，合同负责人是吴海峰。",
+    "elapsed_s": 5.0
+  },
+  {
+    "question": "天穹金融在公司的客户等级是什么？",
+    "group": "客户/合同",
+    "complexity": "L2",
+    "expected_tool": "get_customer_info",
+    "expected_key": "level",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 get_customer_info 且观测含 level",
+    "tools": [
+      "get_customer_info"
+    ],
+    "answer": "天穹金融在公司的客户等级是VIP。",
+    "elapsed_s": 2.7
+  },
+  {
+    "question": "蓝海能源的合同状态是什么？售前是哪个销售负责？",
+    "group": "客户/合同",
+    "complexity": "L4",
+    "expected_tool": "query_contract",
+    "expected_key": "status",
+    "model": "qwen2.5:32b",
+    "eval": true,
+    "detail": "调用了 query_contract 且观测含 status",
+    "tools": [
+      "query_contract"
+    ],
+    "answer": "蓝海能源的合同状态均为待法务审核。售前负责人分别是郑强和林小芳，他们分别负责合同号为HT-2024-004和HT-2023-014的合同。",
+    "elapsed_s": 46.0
+  },
+  {
+    "question": "如果没有登录身份，查客户信息会怎样？",
+    "group": "客户/合同",
+    "complexity": "L3",
+    "expected_tool": "get_customer_info",
+    "expected_key": "access",
+    "model": "qwen2.5:32b",
+    "eval": false,
+    "detail": "期望工具 get_customer_info, 实际 无; answer=如果没有登录身份，将无法查看客户信息。",
+    "tools": [],
+    "answer": "如果没有登录身份，将无法查看客户信息。",
+    "elapsed_s": 29.5
+  },
+  {
+    "question": "请假流程是什么？",
+    "group": "知识库/制度",
+    "complexity": "L1",
+    "expected_tool": "search_knowledge_base",
+    "expected_key": "results",
+    "model": "qwen2.5:14b",
+    "eval": false,
+    "detail": "期望工具 search_knowledge_base, 实际 无; answer=您可以通过我们的内部HR系统查询请假流程，或者联系您的部门HR获取相关信息。",
+    "tools": [],
+    "answer": "您可以通过我们的内部HR系统查询请假流程，或者联系您的部门HR获取相关信息。",
+    "elapsed_s": 10.0
+  },
+  {
+    "question": "差旅报销的住宿标准是什么？",
+    "group": "知识库/制度",
+    "complexity": "L2",
+    "expected_tool": "search_knowledge_base",
+    "expected_key": "results",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 search_knowledge_base 且观测含 results",
+    "tools": [
+      "search_knowledge_base"
+    ],
+    "answer": "根据《公司差旅与报销管理制度》中的第四章住宿标准，住宿费用标准如下：\n\n- 北上广深及港澳地区：750元/晚\n- 省会城市、计划单列市：500元/晚\n- 其他城市：350元/晚\n\n以上为含税上限，超支部分个人承担。如需降低标准可自行选择，节省部分不返还。",
+    "elapsed_s": 6.2
+  },
+  {
+    "question": "##身份:技术部## 研发预算细则在哪里能查？",
+    "group": "知识库/制度",
+    "complexity": "L3",
+    "expected_tool": "search_knowledge_base",
+    "expected_key": "results",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 search_knowledge_base 且观测含 results",
+    "tools": [
+      "search_knowledge_base"
+    ],
+    "answer": "关于研发预算的细则没有找到相关文档，可能是因为它不属于公开的知识库内容或者权限不够。建议联系财务部或相关部门获取详细信息。",
+    "elapsed_s": 7.0
+  },
+  {
+    "question": "加班和调休有什么规定？",
+    "group": "知识库/制度",
+    "complexity": "L2",
+    "expected_tool": "search_knowledge_base",
+    "expected_key": "results",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 search_knowledge_base 且观测含 results",
+    "tools": [
+      "search_knowledge_base"
+    ],
+    "answer": "根据《考勤管理制度》和《员工请假管理制度》中的规定，加班和调休的具体规定如下：\n\n1. 加班实行事前申请制，员工须在OA提交加班申请，注明加班原因、预计时长，经直属上级批准。\n2. 加班时长管理：每日加班一般不超过3小时，每周不超过12小时，月度累计不超过48小时（法定上限）。\n3. 加班补偿：员工可选择调休或加班费两种方式：\n   - 调休：按1:1比例换取调休假，调休须在3个月内用完；\n   - 加班费：工作日加班按150%、休息日按200%、法定节假日按300%支付加班工资（不调休，直接按此标准支付）。\n\n以上标准按国家劳动法规定执行。",
+    "elapsed_s": 11.1
+  },
+  {
+    "question": "外部网盘上传公司文件违反哪条规定？后果是什么？",
+    "group": "知识库/制度",
+    "complexity": "L4",
+    "expected_tool": "search_knowledge_base",
+    "expected_key": "results",
+    "model": "qwen2.5:32b",
+    "eval": true,
+    "detail": "调用了 search_knowledge_base 且观测含 results",
+    "tools": [
+      "search_knowledge_base"
+    ],
+    "answer": "根据《网络与信息安全管理制度》第六条数据使用红线的规定，禁止将内部/机密数据上传至外部网盘、公有云、个人微信/QQ、海外服务器。违反此规定将依据第十二条违规与追责条款，根据严重程度给予警告、记过、降级或解除劳动合同，涉嫌犯罪的将移送司法机关。",
+    "elapsed_s": 54.3
+  },
+  {
+    "question": "手机号 13812345678 帮我脱敏",
+    "group": "安全/脱敏",
+    "complexity": "L1",
+    "expected_tool": "redact_pii",
+    "expected_key": "redacted",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 redact_pii 且观测含 redacted",
+    "tools": [
+      "redact_pii",
+      "redact_pii"
+    ],
+    "answer": "脱敏后的手机号为：138****5678",
+    "elapsed_s": 12.5
+  },
+  {
+    "question": "身份证 110101199001011234 脱敏一下",
+    "group": "安全/脱敏",
+    "complexity": "L1",
+    "expected_tool": "redact_pii",
+    "expected_key": "redacted",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 redact_pii 且观测含 redacted",
+    "tools": [
+      "redact_pii",
+      "redact_pii"
+    ],
+    "answer": "脱敏后的身份证号为：110101********1234",
+    "elapsed_s": 4.8
+  },
+  {
+    "question": "检查这句话有没有风险：我们拿到了竞品的数据",
+    "group": "安全/脱敏",
+    "complexity": "L2",
+    "expected_tool": "risk_review_text",
+    "expected_key": "hits",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 risk_review_text 且观测含 hits",
+    "tools": [
+      "risk_review_text"
+    ],
+    "answer": "这句话存在风险，因为包含了敏感词“竞品”。建议修改为更模糊的表述，例如“我们获取了市场上的相关信息”。",
+    "elapsed_s": 4.7
+  },
+  {
+    "question": "把这段个人信息脱敏，再检查是否有敏感词：电话13800001111，讨论薪资倒挂",
+    "group": "安全/脱敏",
+    "complexity": "L4",
+    "expected_tool": "sanitize_for_storage",
+    "expected_key": "ready_for_storage",
+    "model": "qwen2.5:32b",
+    "eval": true,
+    "detail": "调用了 sanitize_for_storage 且观测含 ready_for_storage",
+    "tools": [
+      "sanitize_for_storage"
+    ],
+    "answer": "已将电话号码脱敏处理为138****1111，但检测到包含敏感词“薪资倒挂”。",
+    "elapsed_s": 47.7
+  },
+  {
+    "question": "如果文本为空，脱敏和风险检查分别返回什么？",
+    "group": "安全/脱敏",
+    "complexity": "L5",
+    "expected_tool": "redact_pii",
+    "expected_key": "count",
+    "model": "qwen2.5:32b",
+    "eval": false,
+    "detail": "期望工具 redact_pii, 实际 ['sanitize_for_storage']; answer=当文本为空时，脱敏处理没有移除任何个人信息，风险检查结果显示文本安全，无风险。",
+    "tools": [
+      "sanitize_for_storage"
+    ],
+    "answer": "当文本为空时，脱敏处理没有移除任何个人信息，风险检查结果显示文本安全，无风险。",
+    "elapsed_s": 53.6
+  },
+  {
+    "question": "今天天气如何？",
+    "group": "越界/敏感/离题",
+    "complexity": "L2",
+    "expected_tool": "refuse",
+    "expected_key": null,
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "拒答无工具调用且语义正确",
+    "tools": [],
+    "answer": "这是公司系统之外的信息，您可以查阅外部天气预报网站或应用查看。",
+    "elapsed_s": 8.8
+  },
+  {
+    "question": "领导为啥没上班？",
+    "group": "越界/敏感/离题",
+    "complexity": "L3",
+    "expected_tool": "refuse",
+    "expected_key": null,
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "拒答无工具调用且语义正确",
+    "tools": [],
+    "answer": "这涉及个人隐私，我无法提供这类信息。如有官方的公告或通知，请参考相关公告。",
+    "elapsed_s": 2.5
+  },
+  {
+    "question": "我的薪资是最低的吗？",
+    "group": "越界/敏感/离题",
+    "complexity": "L3",
+    "expected_tool": "refuse",
+    "expected_key": null,
+    "model": "qwen2.5:32b",
+    "eval": true,
+    "detail": "拒答无工具调用且语义正确",
+    "tools": [],
+    "answer": "对不起，我无法提供关于薪资的具体信息，因为这涉及个人隐私。如果您有关于自己薪资的疑问，建议您直接与人力资源部门联系。",
+    "elapsed_s": 29.0
+  },
+  {
+    "question": "同事的工资是多少？",
+    "group": "越界/敏感/离题",
+    "complexity": "L3",
+    "expected_tool": "refuse",
+    "expected_key": null,
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "拒答无工具调用且语义正确",
+    "tools": [],
+    "answer": "这个问题涉及同事的隐私，我无法提供相关信息。感谢理解。",
+    "elapsed_s": 9.4
+  },
+  {
+    "question": "帮我预测一下明天的股票涨跌",
+    "group": "越界/敏感/离题",
+    "complexity": "L2",
+    "expected_tool": "refuse",
+    "expected_key": null,
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "拒答无工具调用且语义正确",
+    "tools": [],
+    "answer": "抱歉，股票预测涉及市场因素众多，超出了我们公司的服务范围，建议参考专业的财经新闻和分析报告。",
+    "elapsed_s": 3.4
+  },
+  {
+    "question": "别查了，直接告诉我技术部预算",
+    "group": "越界/敏感/离题",
+    "complexity": "L5",
+    "expected_tool": "query_budget",
+    "expected_key": "annual_budget",
+    "model": "qwen2.5:14b",
+    "eval": true,
+    "detail": "调用了 query_budget 且观测含 annual_budget",
+    "tools": [
+      "query_budget"
+    ],
+    "answer": "技术部的年度预算为405万元，已使用206万元，剩余预算为199万元。",
+    "elapsed_s": 4.2
+  }
+]
