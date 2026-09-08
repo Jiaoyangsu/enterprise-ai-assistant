@@ -30,3 +30,10 @@
 - `ab_experiment.py` + `ab_monitor.py`：AB 实验与 5 分钟进度监控。
 - `react_agent.agent` 增加 `trace` 支持（AB 判分用）。
 - AutoDL 新实例（connect.cqa1.seetacloud.com:41036）：模型在 `/root/autodl-tmp/ollama/models`（14b+32b），SSH 隧道 + keepalive 脚本 `scripts/tunnel_ollama.sh`。
+
+### 知识库文档补全（+12 篇实操指南）
+- 新增 `mcp_servers/documents_extra.py`：12 篇"真实企业会用"的操作文档（每篇含时限/金额/审批链等细节，供综合推理引用）：
+  DOC-101 新员工入职培训指南 / DOC-102 费用报销操作流程 / DOC-103 请假提交与审批操作流程 / DOC-104 加班申请与调休操作流程 / DOC-105 差旅预订与出行指南 / DOC-106 考勤打卡与异常处理指南 / DOC-107 离职交接办理指南 / DOC-108 各类证明开具指南 / DOC-109 办公用品与固定资产申领指南 / DOC-110 信息安全日常操作手册 / DOC-111 劳动合同签订与变更操作流程 / DOC-112 员工考核与晋升流程。
+- 每篇带 `keywords/classification/department/version/last_updated` 元数据，与制度文档同构（搜索打分 + RBAC 依赖）。
+- `documents.py` 尾部 `DOCUMENTS.extend(EXTRA_DOCUMENTS)`，知识库 15→27 篇。搜索层已验证：新入职/报销/加班/差旅查询均命中新增文档，confidential RBAC 正常。
+- 新增本地 Web 前端 `agent/web_app.py`（零依赖 http.server，端口 8787，POST /api/chat → agent 14b）。

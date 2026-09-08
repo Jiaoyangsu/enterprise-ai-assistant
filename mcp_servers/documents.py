@@ -1,6 +1,6 @@
 """企业规章制度文档库（详细版）
 
-15 篇，每篇 1000-2000 字，覆盖人事/财务/行政/技术/合规全领域。
+15 篇制度 + 12 篇实操指南（见 documents_extra.py），覆盖人事/财务/行政/技术/合规全领域。
 密级：all(公开) / internal(内部) / confidential(机密，需部门匹配)。
 """
 
@@ -920,6 +920,10 @@ DOCUMENTS = [
         "last_updated": "2024-04-01",
     },
 ]
+
+from documents_extra import EXTRA_DOCUMENTS  # noqa: E402
+
+DOCUMENTS.extend(EXTRA_DOCUMENTS)
 
 if __name__ == "__main__":
     for d in DOCUMENTS:
