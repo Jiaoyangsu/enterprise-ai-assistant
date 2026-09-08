@@ -52,7 +52,7 @@ def search_knowledge_base(
 
     return {
         "found": bool(results),
-        "results": results[:3],
+        "results": results[:5],
         "denied": denied,
         "message": _build_message(results, denied, is_authenticated),
     }

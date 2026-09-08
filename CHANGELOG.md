@@ -3,6 +3,11 @@
 > 规范：每次开发在 `dev` 分支提交并 push（每日同步）；验证稳定的改动合并到 `main` 并 push。
 > 同步记录对标 `git log --oneline`。
 
+### 新增第 8 组"文档综合推理"测试题（9 题，36→45）
+- 报销/请假/培训三主题 × {单点→跨制度→陷阱}，需跨多篇文档（如洛阳出差=DOC-102+DOC-105、试用期转正=DOC-101+DOC-111）。
+- 判分器强化：`Question` 新增 `expected_doc`（必须命中的知识库文档 ID）/`expected_text`（answer 必须含的数字/要点），`ab_experiment.check` 支持强断言（搜索漏目标文档或答案缺要点即判错）。
+- `docs_server.search_knowledge_base` 返回 top-3 → top-5（跨制度题需要正确来源进入结果集）。已离线验证 9 题全部可命中目标文档。
+
 ## 2026-09-08
 
 ### AB 实验结论（决定默认模型）
