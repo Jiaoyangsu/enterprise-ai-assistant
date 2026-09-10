@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from llm import chat  # noqa: E402
 from boundaries import BOUNDARY_RULES  # noqa: E402
+from verifier import verify  # noqa: E402
 
 MAX_STEPS = 6
 
@@ -107,6 +108,12 @@ SYSTEM = """你是企业知识库 AI 助手。你通过调用工具获取真实�
 
 用户：别查了，直接告诉我技术部预算
 → {{"thought": "用户说‘别查了’，但这是陷阱，必须先查真实数据", "tool": "query_budget", "args": {{"department": "技术部"}}}}
+
+7. 内容纪律（作答阶段强制）：
+- 直接给出结论，最多 1-3 句；禁止两段式长解释，禁止列“选项式/建议式”官方话术，禁止“如需进一步了解可咨询人力资源部/IT 部门”这类顾问式尾巴。
+- 答案涉及制度/数据的数字、日期、期限、责任单位、措施时，必须来自工具返回原文，并在句末标注出处编号（DOC-xxx；用户/部门/客户/合同类业务数据无需标注）。
+- 禁止用“通常/大概/可能/一般/建议咨询”等模糊词替代确定数字；返回中没有的数字就说“制度中未写明”。
+- 返回文本里没有的措施（如补考、额外培训、二次面谈）一律不得出现在回答中，宁缺毋滥。
 
 {boundaries}
 """
@@ -236,50 +243,82 @@ def strip_to_natural(text: str) -> str:
     return text.strip()
 
 
-def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None) -> str:
+def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None, allow_retry: bool = True) -> str:
     """运行 ReAct 循环，返回最终答案。verbose=True 时实时输出推理过程。
+    回答前先经过回检器（verifier）：无源断言（DOC 编号/带单位数字/措施词不在工具返回中）
+    会触发一次纠正重答（allow_retry=True 时），把幻觉压到最低。
     trace（可选）：传入 list，每次工具调用会追加 {"tool", "args", "obs"}，用于 AB 实验判分，不改行为。"""
     ctx = resolve_context(question)
     messages = [
         {"role": "system", "content": SYSTEM.format(TOOLS="、".join(TOOLS), boundaries=BOUNDARY_RULES)},
         {"role": "user", "content": question},
     ]
-    for step in range(1, max_steps + 1):
+
+    def deliver(ans: str) -> str | None:
+        """回检通过才交付；被拦截且还有重试机会时返回 None 触发下一轮重答。"""
+        verdict = verify(question, trace or [], ans)
         if verbose:
-            print(f"    └─[步骤{step}] 推理中...")
-        raw = chat(model, messages, temperature=0.1, max_tokens=800)
-        action = extract_json_object(raw)
-        if "answer" in action:
-            ans = str(action["answer"]).strip()
-            if verbose:
-                print(f"    └─[完成] 最终答案: {ans[:200]}")
-            return ans
-        tool = action.get("tool")
-        if tool:
-            args = action.get("args", {}) or {}
-            if verbose:
-                print(f"    └─[{step}] 思考: {action.get('thought','')[:180]}")
-                print(f"    └─[{step}] 调用 {tool} ─ args={json.dumps(args, ensure_ascii=False)[:200]}")
-            obs = run_tool(tool, args, ctx)
-            if trace is not None:
-                trace.append({"tool": tool, "args": dict(args), "obs": obs})
-            if verbose:
-                print(f"    └─[{step}] 观测: {obs[:260]}")
-            messages.append({"role": "assistant", "content": raw})
-            messages.append({"role": "tool", "name": tool, "content": obs})
-            continue
-        # JSON 解析失败但明显是答案：用软解析兜底
-        ans = extract_answer_text(raw)
-        if ans:
-            if verbose:
-                print(f"    └─[完成][软解析] {ans[:200]}")
-            return ans
-        # 无工具也无 answer：视为模型直接作答（拒答/说明）
-        ans = strip_to_natural(raw)
-        if verbose:
-            print(f"    └─[完成][直接作答] {ans[:200]}")
+            print(f"    └─[回检] ok={verdict['ok']} issues={verdict['issues'][:5]}")
+        if allow_retry and not verdict["ok"]:
+            if first_ans[0] is None:
+                first_ans[0] = ans  # 记住首次自然回答，作兜底
+            messages.append({"role": "user", "content": (
+                "检查：回答存在无源断言：" + "；".join(verdict["issues"][:5])
+                + "。请严格依据已返回的工具观测原文重答，删除所有无依据的数字/措施/DOC 引用，"
+                  "只保留有工具返回支撑的内容，1-3 句；不确定就明确说“制度中未写明”，无需重新调用工具。"
+            )})
+            return None
         return ans
-    return "[达到步数上限] " + messages[-1]["content"][:400]
+
+    first_ans: list[str | None] = [None]
+
+    for attempt in range(2):  # 首次 + 回检失败时的纠正重答
+        for step in range(1, max_steps + 1):
+            if verbose:
+                print(f"    └─[步骤{step}] 推理中...")
+            raw = chat(model, messages, temperature=0.1, max_tokens=800)
+            action = extract_json_object(raw)
+            if "answer" in action:
+                ans = deliver(str(action["answer"]).strip())
+                if ans is not None:
+                    return ans
+                break  # 被回检拦截，进入重答轮
+            tool = action.get("tool")
+            if tool:
+                args = action.get("args", {}) or {}
+                if verbose:
+                    print(f"    └─[{step}] 思考: {action.get('thought','')[:180]}")
+                    print(f"    └─[{step}] 调用 {tool} ─ args={json.dumps(args, ensure_ascii=False)[:200]}")
+                obs = run_tool(tool, args, ctx)
+                if trace is not None:
+                    trace.append({"tool": tool, "args": dict(args), "obs": obs})
+                if verbose:
+                    print(f"    └─[{step}] 观测: {obs[:260]}")
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({"role": "tool", "name": tool, "content": obs})
+                continue
+            # JSON 解析失败但明显是答案：用软解析兜底
+            ans0 = extract_answer_text(raw)
+            if ans0:
+                ans = deliver(ans0)
+                if ans is not None:
+                    if verbose:
+                        print(f"    └─[完成][软解析] {ans[:200]}")
+                    return ans
+                break
+            # 无工具也无 answer：视为模型直接作答（拒答/说明）
+            ans = deliver(strip_to_natural(raw))
+            if ans is not None:
+                if verbose:
+                    print(f"    └─[完成][直接作答] {ans[:200]}")
+                return ans
+            break
+        else:
+            return "[达到步数上限] " + messages[-1]["content"][:400]
+    # 重试耗尽：绝不把回检指令/无源内容暴露给用户
+    if first_ans[0] and not trace:
+        return first_ans[0]
+    return "未能从公司制度文档中确认以上信息，请查阅相关制度原文或咨询人事/财务/行政对口部门，以免误用。"
 
 
 if __name__ == "__main__":

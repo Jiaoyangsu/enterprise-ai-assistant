@@ -66,7 +66,8 @@ async function send(){
     const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:val})});
     const d=await r.json();
     box.lastElementChild.remove();
-    add('a', d.answer, '用时 '+(d.elapsed_s||0).toFixed(1)+'s · 模型 '+(d.model||'14b'));
+    const tools=Array.isArray(d.tools)&&d.tools.length? (' · 工具: '+d.tools.join(' → ')) : ' · 未调用工具';
+    add('a', d.answer, '用时 '+(d.elapsed_s||0).toFixed(1)+'s · 模型 '+(d.model||'14b')+tools);
   }catch(e){ box.lastElementChild.remove(); add('a','请求失败: '+e); }
   go.disabled=false; q.focus();
 }
@@ -97,8 +98,10 @@ class Handler(BaseHTTPRequestHandler):
         if question:
             t0 = time.time()
             try:
-                ans = agent(question, model="qwen2.5:14b")
+                trace = []
+                ans = agent(question, model="qwen2.5:14b", trace=trace)
                 out = {"answer": ans, "model": "qwen2.5:14b",
+                       "tools": [t["tool"] for t in trace],
                        "elapsed_s": round(time.time() - t0, 1)}
             except Exception as e:
                 status, out = 500, err_to_dict(str(e))

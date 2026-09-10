@@ -74,7 +74,8 @@ def query_budget(department: str = "", group: str = "") -> dict:
 @mcp.tool()
 def list_departments() -> dict:
     """列出全部事业群与部门、负责人、人数。只读操作。
-    场景示例：'公司有哪些部门？' '技术部经理是谁？' '公司分几个事业群？'"""
+    场景示例：'公司有哪些部门？' '技术部经理是谁？' '公司分几个事业群？'
+    返回 departments[].manager 是部门负责人姓名；回答'XX负责人是谁'时从该字段读取，不要猜测名字。"""
     return {
         "found": True,
         "count": len(DEPARTMENTS),
@@ -105,7 +106,8 @@ def get_customer_info(customer_name: str, user_role: str = "") -> dict:
 @mcp.tool()
 def list_customers(industry: str = "", user_role: str = "") -> dict:
     """列出客户列表，或按行业筛选客户。只读操作。RBAC：仅管理层(admin/manager)可查看。
-    场景示例：'有哪些客户？' '做跨境电商的客户有哪些？' '制造业的客户有哪些？'"""
+    场景示例：'有哪些客户？' '做跨境电商的客户有哪些？' '制造业的客户有哪些？'
+    返回 customers[].name 是客户实名；回答客户列举类问题以返回列表为准，逐个列出即可，不要编造返回之外的客户名。"""
     if user_role not in ("admin", "manager"):
         return {"access": "denied", "message": "无权访问客户信息，需要管理层权限"}
     rows = []
@@ -128,7 +130,8 @@ def list_customers(industry: str = "", user_role: str = "") -> dict:
 def query_contract(contract_id: str = "", customer: str = "", status: str = "") -> dict:
     """查询合同状态（审批进度/金额/负责人）。只读操作。
     支持按合同号、客户名查询，或按状态（审批中/已签署/履行中等）列出合同。
-    场景示例：'HT-2024-002审批到哪了？' '华宇科技的合同是什么状态？' '审批中的合同有哪些？'"""
+    场景示例：'HT-2024-002审批到哪了？' '华宇科技的合同是什么状态？' '审批中的合同有哪些？'
+    返回 contracts[].status 是合同状态字段；回答'审批中的合同/某客户有哪些合同'等问题，以该字段为准筛选，不要编造合同或客户名。"""
     if not contract_id and not customer and not status:
         return {"found": False, "message": "请输入合同号、客户名称，或合同状态（如：审批中）"}
 

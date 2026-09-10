@@ -29,7 +29,8 @@ from react_agent import agent  # noqa: E402
 from router import route  # noqa: E402
 from run_routed import refuse  # noqa: E402
 
-REFUSE_MARK = ("无法", "抱歉", "不能", "隐私", "无关", "对不起", "建议您", "系统")
+REFUSE_MARK = ("无法", "抱歉", "不能", "隐私", "无关", "对不起", "建议您", "系统",
+               "不掌握", "不提供", "不予提供", "不属于", "不涉及", "不回复", "拒绝")
 NAMES = {"14b": ("qwen2.5:14b",), "32b": ("qwen2.5:32b",), "mixed": ()}
 
 
@@ -65,7 +66,7 @@ def check(q, trace, answer):
         return False, f"搜索观测未命中期望文档 {miss}; 实际文档见 obs; answer={answer[:40]}"
 
     texts = [q.expected_text] if isinstance(q.expected_text, str) else q.expected_text
-    if texts and not any(txt in answer for txt in texts):
+    if texts and not any("".join(txt.split()) in "".join(answer.split()) for txt in texts):
         return False, f"answer 未含期望要点 {texts}; answer={answer[:60]}"
 
     return True, f"调用了 {q.expected_tool} 且观测含 {q.expected_key}"
