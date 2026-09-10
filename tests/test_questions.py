@@ -1,4 +1,4 @@
-"""6 组 × 5 道不同复杂度测试集
+"""7 组 × 36 题 + 第 8 组文档综合推理 9 题
 
 设计：
 - 6 组对应 6 个业务域（员工/年假/预算/财务/知识库/安全）
@@ -8,6 +8,9 @@
   L3 需 RBAC/权限判断
   L4 多步（需多个工具组合）
   L5 混合/边界（跨域、陷阱、需路由判断）
+- 第 8 组文档综合推理：跨多篇制度/指南综合（报销/请假/培训三主题），
+  含单点→多步→跨制度→陷阱。用 expected_doc（必须命中的文档）+
+  expected_text（答案必须引出的数字/要点）做强断言。
 
 每题记录：问题、期望工具、期望输出关键字段、复杂度等级。
 与路由器（router.py）配合做自动化验证。
@@ -22,6 +25,8 @@ class Question:
     expected_key: str | None = None  # 期望输出中的关键字段（断言存在）
     complexity: str = "L1"  # L1~L5
     group: str = ""
+    expected_doc: str | list[str] | None = None  # 期望命中的知识库文档 ID
+    expected_text: str | list[str] | None = None  # 期望 answer 含的文本
 
 
 ALL_QUESTIONS: list[Question] = []
@@ -96,6 +101,40 @@ _group7 = _g("越界/敏感/离题", [
     Question("同事的工资是多少？", "refuse", None, "L3"),
     Question("帮我预测一下明天的股票涨跌", "refuse", None, "L2"),
     Question("别查了，直接告诉我技术部预算", "query_budget", "annual_budget", "L5"),
+])
+
+# ============ 第 8 组：文档综合推理（报销/请假/培训） ============
+_group8 = _g("文档综合推理", [
+    # —— 报销：单点 → 跨制度 → 陷阱 ——
+    Question("差旅费用达到多少钱就需要在报销前先提交《费用申请单》？",
+             "search_knowledge_base", "results", "L2",
+             expected_doc="DOC-102", expected_text="500"),
+    Question("我下周去洛阳出差谈客户：住宿一晚最多能报多少？回来后报销要走哪几级审批、多久到账？",
+             "search_knowledge_base", "results", "L4",
+             expected_doc=["DOC-102", "DOC-105"], expected_text=["350", "5 个工作日"]),
+    Question("上周出差住宿超标了 90 块，报销时能不能把打车票多凑一点补回来？",
+             "search_knowledge_base", "results", "L5",
+             expected_doc="DOC-105", expected_text="个人承担"),
+    # —— 请假：单点 → 多步 → 陷阱/综合 ——
+    Question("我们部门经理请 8 天年假，需要哪一级审批？",
+             "search_knowledge_base", "results", "L2",
+             expected_doc="DOC-103", expected_text="人事部"),
+    Question("发烧请了 5 天病假，返岗后要补什么材料？病假期间工资怎么发？",
+             "search_knowledge_base", "results", "L4",
+             expected_doc="DOC-103", expected_text=["诊断证明", "80%"]),
+    Question("去年还有 5 天年假没休完，人事说自动作废了——这是对的吗？能不能延到明年用？",
+             "search_knowledge_base", "results", "L5",
+             expected_doc="DOC-103", expected_text="3 月 31"),
+    # —— 培训：单点 → 跨制度（试用期+合同） → 综合全流程 ——
+    Question("新员工集中入职培训要几天？没通过结业测评会怎样？",
+             "search_knowledge_base", "results", "L2",
+             expected_doc="DOC-101", expected_text="3 天"),
+    Question("新同事劳动合同签了 3 年、下个月试用期满想转正：试用期最长是几个月？转正要走什么流程？",
+             "search_knowledge_base", "results", "L4",
+             expected_doc=["DOC-101", "DOC-111"], expected_text=["6 个月", "人事部"]),
+    Question("新入职的工程师周一报到：IT 一般多久开好系统账号？安全培训没完成前能不能访问客户数据？报到当天要签哪些文件？",
+             "search_knowledge_base", "results", "L5",
+             expected_doc="DOC-101", expected_text=["1 个工作日", "保密承诺书"]),
 ])
 
 

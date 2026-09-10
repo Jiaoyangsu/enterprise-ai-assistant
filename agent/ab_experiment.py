@@ -29,12 +29,20 @@ from react_agent import agent  # noqa: E402
 from router import route  # noqa: E402
 from run_routed import refuse  # noqa: E402
 
-REFUSE_MARK = ("无法", "抱歉", "不能", "隐私", "无关", "对不起", "建议您", "系统")
+REFUSE_MARK = ("无法", "抱歉", "不能", "隐私", "无关", "对不起", "建议您", "系统",
+               "不掌握", "不提供", "不予提供", "不属于", "不涉及", "不回复", "拒绝")
 NAMES = {"14b": ("qwen2.5:14b",), "32b": ("qwen2.5:32b",), "mixed": ()}
 
 
 def check(q, trace, answer):
-    """返回 (correct: bool, detail: str)。"""
+    """返回 (correct: bool, detail: str)。
+
+    断言规则（由弱到强）：
+    - expected_tool == "refuse": 无工具调用 且 answer 含拒绝语义
+    - 基础: 实际调用过 expected_tool，且该工具观测含 expected_key 字段，answer 非空
+    - expected_doc: search_knowledge_base 的观测中必须出现该文档 ID（支持 list）
+    - expected_text: answer 必须包含该文本（支持 list，任一命中）
+    """
     tools = [t["tool"] for t in trace]
     if q.expected_tool == "refuse":
         if not tools and any(m in answer for m in REFUSE_MARK):
@@ -44,10 +52,24 @@ def check(q, trace, answer):
         return False, f"期望工具 {q.expected_tool}, 实际 {tools or '无'}; answer={answer[:40]}"
     if not answer or len(answer) < 2:
         return False, "answer 为空"
-    for t in trace:
-        if t["tool"] == q.expected_tool and q.expected_key in t["obs"]:
-            return True, f"调用了 {q.expected_tool} 且观测含 {q.expected_key}"
-    return False, f"调用了 {q.expected_tool} 但观测未见 {q.expected_key}; answer={answer[:40]}"
+
+    obs_all = " ".join(t["obs"] for t in trace)
+    base_ok = any(
+        t["tool"] == q.expected_tool and q.expected_key in t["obs"] for t in trace
+    )
+    if not base_ok:
+        return False, f"调用了 {q.expected_tool} 但观测未见 {q.expected_key}; answer={answer[:40]}"
+
+    docs = [q.expected_doc] if isinstance(q.expected_doc, str) else q.expected_doc
+    if docs and any(d not in obs_all for d in docs):
+        miss = [d for d in docs if d not in obs_all]
+        return False, f"搜索观测未命中期望文档 {miss}; 实际文档见 obs; answer={answer[:40]}"
+
+    texts = [q.expected_text] if isinstance(q.expected_text, str) else q.expected_text
+    if texts and not any("".join(txt.split()) in "".join(answer.split()) for txt in texts):
+        return False, f"answer 未含期望要点 {texts}; answer={answer[:60]}"
+
+    return True, f"调用了 {q.expected_tool} 且观测含 {q.expected_key}"
 
 
 def run(mode: str, questions, out_dir: str):
@@ -77,6 +99,8 @@ def run(mode: str, questions, out_dir: str):
             "complexity": q.complexity,
             "expected_tool": q.expected_tool,
             "expected_key": q.expected_key,
+            "expected_doc": q.expected_doc,
+            "expected_text": q.expected_text,
             "model": m,
             "eval": ok,
             "detail": detail,

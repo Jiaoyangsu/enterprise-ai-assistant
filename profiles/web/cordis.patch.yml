@@ -1,16 +1,21 @@
+# web layer: 挂载企业 3 个 MCP Server（streamable HTTP）
+# 注：transport 字段必须显式写 streamable-http，否则 dsh-mcp-client 不建立连接、工具不注册。
 - insert:
   - id: mcp-docs
     name: '@deepseek-ai/dsh-mcp-client'
     config:
       serverName: docs
+      transport: streamable-http
       url: http://127.0.0.1:8001/mcp
   - id: mcp-ops
     name: '@deepseek-ai/dsh-mcp-client'
     config:
       serverName: ops
+      transport: streamable-http
       url: http://127.0.0.1:8002/mcp
   - id: mcp-security
     name: '@deepseek-ai/dsh-mcp-client'
     config:
       serverName: security
+      transport: streamable-http
       url: http://127.0.0.1:8003/mcp
