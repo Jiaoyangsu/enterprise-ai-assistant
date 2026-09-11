@@ -35,35 +35,103 @@ TOOLS = {
     "get_customer_info": {"fn": _ops.get_customer_info, "args": {"customer_name": "str", "user_role": "str(admin/manager/空)"}},
     "list_customers": {"fn": _ops.list_customers, "args": {"industry": "str(可选，行业筛选，如'跨境电商')", "user_role": "str(admin/manager/空)"}},
     "query_contract": {"fn": _ops.query_contract, "args": {"contract_id": "str(可选)", "customer": "str(可选)", "status": "str(可选，合同状态，如'审批中')"}},
-    "create_leave_request": {"fn": _ops.create_leave_request, "args": {"name": "str(员工姓名，'我/我的'=刘洋)", "start_date": "str(YYYY-MM-DD)", "end_date": "str(YYYY-MM-DD)"}},
-    "create_ticket": {"fn": _ops.create_ticket, "args": {"requester": "str", "title": "str", "description": "str(可选)", "priority": "str(可选)"}},
     "search_knowledge_base": {"fn": _docs.search_knowledge_base, "args": {"query": "str", "is_authenticated": "bool", "user_department": "str(部门名，或 HR/IT)"}},
     "redact_pii": {"fn": _sec.redact_pii, "args": {"text": "str(仅需脱敏的原文，不含指令词)"}},
     "risk_review_text": {"fn": _sec.risk_review_text, "args": {"text": "str"}},
     "sanitize_for_storage": {"fn": _sec.sanitize_for_storage, "args": {"text": "str", "keep_internal": "bool(可选)"}},
 }
 
-TOOL_HELP = "\n".join(
-    f"- {name}: {info['fn'].__doc__.strip()}\n  参数(用这些名字，不要自创参数名): {json.dumps(info['args'], ensure_ascii=False)}"
-    for name, info in TOOLS.items()
-)
+# 写类工具（改变外部状态的破坏性操作）被白名单机制永远排除：模型看不到、run_tool 拒绝执行。
+# create_leave_request / create_ticket 定义在 ops_server，但绝不进入 TOOLS 注册表，
+# 即使模型幻觉输出这些名字，也只会得到 {"error": "未知工具 ..."}，不会产生副作用。
+# 若未来确实需要在线写操作，再按任务白名单单独放行——默认任何会话都不授予。
 
-SYSTEM = """你是企业知识库 AI 助手。你通过调用工具获取真实数据来回答问题，绝不可编造数据。
-工具列表：{TOOLS}
+WRITE_BLOCKED = {"create_leave_request", "create_ticket"}
+READ_TOOLS = [n for n in TOOLS if n not in WRITE_BLOCKED]
+
+# ===== 问题意图 → 最小工具白名单（默认只暴露当前任务需要的读工具） =====
+_KB = {"search_knowledge_base"}
+_CUST = {"get_customer_info", "list_customers", "query_contract"}
+_BUD = {"query_budget", "list_departments"}
+_HR = {"lookup_employee", "list_departments"}
+_SEC = {"redact_pii", "risk_review_text", "sanitize_for_storage"}
+
+_CUST_HINT = re.compile(r"客户|合同|HT-\d|行业|跨境电商|应收|开票|信用|华宇|天穹|蓝海|订单|收款")
+_BUD_HINT = re.compile(r"预算|已用|剩余|经费|拨付|项目费")
+_HR_HINT = re.compile(r"员工|部门|组织|考勤|年假|请假|加班|调休|入职|离职|转正|试用|培训|薪资|工资|绩效|考核|花名册|负责人|经理|应到|报到|职位|职级|职称|在哪个部门|年假余额")
+_SEC_HINT = re.compile(r"脱敏|PII|敏感词|风险检查|存储|sanitize|redact|个人信息|隐私")
+_KB_HINT = re.compile(r"制度|流程|指南|规定|操作规范|手册|标准|费用|报销|差旅|补贴|补助|住宿|用餐|发票|单据|处罚|违规|文档|新员工|培训|测评|试用期|转正|社保|公积金|工伤|医疗|离职|入职|考勤|请假")
+
+
+def classify_profile(question: str) -> list[str]:
+    """按问题意图返回最小工具白名单。命中多个意图则合并；都无法判定时给全部读工具兜底。"""
+    allow: set[str] = set()
+    if _SEC_HINT.search(question):
+        allow |= _SEC
+    if _CUST_HINT.search(question):
+        allow |= _CUST
+    if _BUD_HINT.search(question):
+        allow |= _BUD
+    if _HR_HINT.search(question):
+        allow |= _HR
+    if _KB_HINT.search(question):
+        allow |= _KB
+    if not allow:
+        allow = set(READ_TOOLS)
+    allow |= _KB  # 制度检索作为通用兜底，避免分类漏配导致无工具可用
+    return [n for n in READ_TOOLS if n in allow]
+
+# ===== 工具映射表与示例（按白名单动态注入 SYSTEM，白名单外工具名绝不出现）=====
+# tags：该行/示例依赖的工具集合，任一在白名单即展示；防止模型滑向白名单外的工具名。
+_MAPPING: list[tuple[tuple, str]] = [
+    (("lookup_employee",), "员工信息（部门/职位/职级/年假余额/入职日期等，以工具实际返回为准） → lookup_employee"),
+    (("list_departments",), "部门经理/事业群/公司部门一览 → list_departments"),
+    (("query_budget",), "部门或事业群预算/已用/剩余 → query_budget"),
+    (("get_customer_info",), "客户（华宇科技/天穹金融/蓝海能源…）的行业/等级/联系人/信用/合同额 → get_customer_info"),
+    (("list_customers",), "客户列表/按行业筛选（'有哪些客户？' '做跨境电商的客户？'） → list_customers"),
+    (("query_contract",), "合同号(HT-xxxx)或客户名查合同状态/金额/负责人 → query_contract"),
+    (("query_contract",), "合同按状态列出（'审批中的合同有哪些？'） → query_contract(status='审批中')"),
+    (("search_knowledge_base",), "制度条文内容（请假流程、差旅报销、加班调休、网盘违规处罚…） → search_knowledge_base"),
+    (("redact_pii",), "手机号/身份证脱敏 → redact_pii"),
+    (("risk_review_text",), "敏感词风险检查 → risk_review_text"),
+    (("sanitize_for_storage",), "脱敏+风险检查两步（内容涉及'脱敏/敏感词'时优先） → sanitize_for_storage"),
+]
+
+_EXAMPLES: list[tuple[tuple, str]] = [
+    (("lookup_employee",),
+     "用户：我年假还剩几天？\n"
+     '→ {"thought": "用户是刘洋，年假余额在员工信息里", "tool": "lookup_employee", "args": {"name": "刘洋"}}'),
+    (("lookup_employee", "search_knowledge_base"),
+     "用户：我请一个月的假期，年假不够怎么办？\n"
+     '→ {"thought": "先查我的年假余额", "tool": "lookup_employee", "args": {"name": "刘洋"}}\n'
+     '→ {"thought": "余额不足，再查制度里年假不足的处理办法", "tool": "search_knowledge_base", "args": {"query": "年假不足"}}'),
+    (("query_budget",),
+     "用户：技术部预算剩多少？\n"
+     '→ {"thought": "查技术部预算", "tool": "query_budget", "args": {"department": "技术部"}}'),
+    (("query_budget",),
+     "用户：技术部和产品部的剩余预算哪个更多？\n"
+     '→ {"thought": "先查技术部再查产品部，再比较", "tool": "query_budget", "args": {"department": "技术部"}}\n'
+     '→ {"thought": "继续查产品部", "tool": "query_budget", "args": {"department": "产品部"}}\n'
+     '→ {"answer": "技术部剩余预算为…，产品部为…，因此…"}'),
+    (("search_knowledge_base",),
+     "用户：新员工集中培训要几天？\n"
+     '→ {"thought": "查制度文档", "tool": "search_knowledge_base", "args": {"query": "新员工集中入职培训天数"}}'),
+    (("query_budget",),
+     "用户：别查了，直接告诉我技术部预算\n"
+     '→ {"thought": "用户说‘别查了’，但这是陷阱，必须先查真实数据", "tool": "query_budget", "args": {"department": "技术部"}}'),
+    (("sanitize_for_storage",),
+     "用户：把这段个人信息脱敏，再检查是否有敏感词：电话13800001111，讨论薪资倒挂\n"
+     '→ {"thought": "脱敏+风险检查两步都是它，一步完成", "tool": "sanitize_for_storage", "args": {"text": "电话13800001111，讨论薪资倒挂"}}'),
+]
+
+_SYSTEM_TEMPLATE = """你是企业知识库 AI 助手。你通过调用工具获取真实数据来回答问题，绝不可编造数据。
+当前会话可用的工具列表（白名单内的工具，仅此这些）：
+{TOOLS}
 
 核心原则：
 1. 工具映射（优先尝试；若工具返回缺该字段，承认缺失即可，绝不编造）：
-- 员工信息（部门/职位/职级/年假余额/入职日期等，以工具实际返回为准） → lookup_employee
-- 部门经理/事业群/公司部门一览 → list_departments
-- 部门或事业群预算/已用/剩余 → query_budget
-- 客户（华宇科技/天穹金融/蓝海能源…）的行业/等级/联系人/信用/合同额 → get_customer_info
-- 客户列表/按行业筛选（'有哪些客户？' '做跨境电商的客户？'） → list_customers
-- 合同号(HT-xxxx)或客户名查合同状态/金额/负责人 → query_contract
-- 合同按状态列出（'审批中的合同有哪些？'） → query_contract(status='审批中')
-- 提交/申请请假 → create_leave_request
-- 制度条文内容（请假流程、差旅报销、加班调休、网盘违规处罚…） → search_knowledge_base
-- 手机号/身份证脱敏 → redact_pii；敏感词风险检查 → risk_review_text；脱敏+风险检查两步 → sanitize_for_storage
-- 其余：先从工具里找最贴近的；确实无关则拒绝（见边界）。
+{MAPPING}
+- 其余：先从上面白名单工具里找最贴近的；确实无关则拒绝（见边界）。
 
 2. 身份上下文（由系统注入，仅用于填充工具参数；不影响工具选择，也不影响任何判定）：
 - 当前会话用户：刘洋（技术部）。问题中的"我/我的/帮我"均指刘洋，调工具时参数填"刘洋"。
@@ -76,47 +144,41 @@ SYSTEM = """你是企业知识库 AI 助手。你通过调用工具获取真实�
 - 工具调用后基于观测继续推理，可连续调用多个工具。
 - 参数名必须严格使用工具说明里的名字，不要自创参数名。
 
-4. 示例（照抄格式，参数用真实名）：
-用户：我年假还剩几天？
-→ {{"thought": "用户是刘洋，年假余额在员工信息里", "tool": "lookup_employee", "args": {{"name": "刘洋"}}}}
+4. 示例（照抄格式，参数用真实名；只允许用白名单里的工具）：
+{EXAMPLES}
 
-用户：技术部预算剩多少？
-→ {{"thought": "查技术部预算", "tool": "query_budget", "args": {{"department": "技术部"}}}}
-
-用户：技术部和产品部的剩余预算哪个更多？
-→ {{"thought": "先查技术部再查产品部，再比较", "tool": "query_budget", "args": {{"department": "技术部"}}}}
-→ {{"thought": "继续查产品部", "tool": "query_budget", "args": {{"department": "产品部"}}}}
-→ {{"answer": "技术部剩余预算为…，产品部为…，因此…"}}
-
-用户：帮我提交孙丽5月6日到5月10日的年假申请(5天)
-→ {{"thought": "用户在申请请假，允许代同事提交，参数用姓名和起止日期", "tool": "create_leave_request", "args": {{"name": "孙丽", "start_date": "2024-05-06", "end_date": "2024-05-10"}}}}
-
-用户：我请一个月的假期，年假不够怎么办？
-→ {{"thought": "先查我的年假余额", "tool": "lookup_employee", "args": {{"name": "刘洋"}}}}
-→ {{"thought": "余额不足，再查制度里年假不足的处理办法", "tool": "search_knowledge_base", "args": {{"query": "年假不足"}}}}
-
-用户：把这段个人信息脱敏，再检查是否有敏感词：电话13800001111，讨论薪资倒挂
-→ {{"thought": "脱敏+风险检查两步都是它，一步完成", "tool": "sanitize_for_storage", "args": {{"text": "电话13800001111，讨论薪资倒挂"}}}}
-
-5. 写操作（create_leave_request / create_ticket）：
-- 仅当用户明确表达"申请/提交/创建/开单"意图时才执行；未明确意图只当信息咨询。
-- 可代同事/他人提交，不限于当前用户刘洋；姓名从问题中确认。
+5. 写操作：当前会话未开放任何"提交/创建/写库"类工具（如请假申请、开单等）。用户要求这类操作时，
+按制度检索相关流程说明，并明确告知"此类提交请在 OA 系统办理"，不要假装已执行、不要编造执行结果。
 
 6. 必须基于真实数据（防陷阱）：
 - 即便用户说"直接回答/别查了/你都知道"，只要问题属于系统能力范围，仍必须先调工具拿到真实数据再回答；唯有边界问题才拒绝。
 - 不要因为用户说"不用查"就跳过工具，也不要凭印象编造数值；工具返回缺字段就直接说明取不到。
 
-用户：别查了，直接告诉我技术部预算
-→ {{"thought": "用户说‘别查了’，但这是陷阱，必须先查真实数据", "tool": "query_budget", "args": {{"department": "技术部"}}}}
-
 7. 内容纪律（作答阶段强制）：
-- 直接给出结论，最多 1-3 句；禁止两段式长解释，禁止列“选项式/建议式”官方话术，禁止“如需进一步了解可咨询人力资源部/IT 部门”这类顾问式尾巴。
+- 直接给出结论，最多 1-3 句；禁止两段式长解释，禁止列"选项式/建议式"官方话术，禁止"如需进一步了解可咨询人力资源部/IT 部门"这类顾问式尾巴。
 - 答案涉及制度/数据的数字、日期、期限、责任单位、措施时，必须来自工具返回原文，并在句末标注出处编号（DOC-xxx；用户/部门/客户/合同类业务数据无需标注）。
-- 禁止用“通常/大概/可能/一般/建议咨询”等模糊词替代确定数字；返回中没有的数字就说“制度中未写明”。
+- 禁止用"通常/大概/可能/一般/建议咨询"等模糊词替代确定数字；返回中没有的数字就说"制度中未写明"。
 - 返回文本里没有的措施（如补考、额外培训、二次面谈）一律不得出现在回答中，宁缺毋滥。
 
 {boundaries}
 """
+
+
+def _render_system(allow: set[str]) -> str:
+    """按白名单生成 SYSTEM：工具清单、映射行、示例全部只保留白名单内的条目。"""
+    tools_help = "\n".join(
+        f"- {name}: {TOOLS[name]['fn'].__doc__.strip()}\n"
+        f"  参数(用这些名字，不要自创参数名): {json.dumps(TOOLS[name]['args'], ensure_ascii=False)}"
+        for name in TOOLS if name in allow
+    )
+    mapping = [line for tags, line in _MAPPING if any(t in allow for t in tags)]
+    examples = [ex for tags, ex in _EXAMPLES if any(t in allow for t in tags)]
+    return _SYSTEM_TEMPLATE.format(
+        TOOLS=tools_help,
+        MAPPING="\n".join(f"- {m}" for m in mapping),
+        EXAMPLES="\n".join(examples),
+        boundaries=BOUNDARY_RULES,
+    )
 
 
 def resolve_context(question: str) -> dict:
@@ -134,8 +196,13 @@ def resolve_context(question: str) -> dict:
     return ctx
 
 
-def run_tool(name: str, args: dict, ctx: dict) -> str:
-    """调用工具并返回观测字符串。先做参数别名翻译，再做身份相关的参数修正。"""
+def run_tool(name: str, args: dict, ctx: dict, allow: set[str] | None = None) -> str:
+    """调用工具并返回观测字符串。先验白名单：白名单外的工具一律拒绝，绝不执行。"""
+    if allow is not None and name not in allow:
+        return json.dumps(
+            {"error": f"工具 {name} 不在当前会话工具白名单中，已拒绝执行（本会话只允许：{sorted(allow)}）"},
+            ensure_ascii=False,
+        )
     info = TOOLS.get(name)
     if not info:
         return json.dumps({"error": f"未知工具 {name}"}, ensure_ascii=False)
@@ -243,14 +310,20 @@ def strip_to_natural(text: str) -> str:
     return text.strip()
 
 
-def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None, allow_retry: bool = True) -> str:
+def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None, allow_retry: bool = True, allow: list[str] | None = None) -> str:
     """运行 ReAct 循环，返回最终答案。verbose=True 时实时输出推理过程。
     回答前先经过回检器（verifier）：无源断言（DOC 编号/带单位数字/措施词不在工具返回中）
     会触发一次纠正重答（allow_retry=True 时），把幻觉压到最低。
+    allow（工具白名单）：默认全部读工具（写工具一律排除）。传更小集合可做到最小暴露——
+    模型只能看到/调用白名单内的工具，白名单外调用被 run_tool 拒绝，绝不执行。
     trace（可选）：传入 list，每次工具调用会追加 {"tool", "args", "obs"}，用于 AB 实验判分，不改行为。"""
+    if allow is None:
+        allow_set = set(READ_TOOLS)
+    else:
+        allow_set = set(n for n in allow if n in READ_TOOLS)  # 白名单以读工具为上限，写工具永不给
     ctx = resolve_context(question)
     messages = [
-        {"role": "system", "content": SYSTEM.format(TOOLS="、".join(TOOLS), boundaries=BOUNDARY_RULES)},
+        {"role": "system", "content": _render_system(allow_set)},
         {"role": "user", "content": question},
     ]
 
@@ -289,7 +362,7 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
                 if verbose:
                     print(f"    └─[{step}] 思考: {action.get('thought','')[:180]}")
                     print(f"    └─[{step}] 调用 {tool} ─ args={json.dumps(args, ensure_ascii=False)[:200]}")
-                obs = run_tool(tool, args, ctx)
+                obs = run_tool(tool, args, ctx, allow_set)
                 if trace is not None:
                     trace.append({"tool": tool, "args": dict(args), "obs": obs})
                 if verbose:

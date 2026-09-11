@@ -5,15 +5,47 @@
 """
 import json
 import os
+import socket
 import sys
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from react_agent import agent  # noqa: E402
+from react_agent import agent, classify_profile  # noqa: E402
+
+FROM_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
+FROM_HOST, FROM_PORT = FROM_BASE_URL.split("://")[1].split(":")[0], int(
+    FROM_BASE_URL.split(":")[-1].split("/")[0] or 11434
+)
+MCP_PROBES = [("docs", 8001), ("ops", 8002), ("security", 8003)]
+
+
+def healthcheck(timeout: float = 2.5) -> tuple:
+    issues = []
+    try:
+        with socket.create_connection((FROM_HOST, FROM_PORT), timeout=min(timeout, 2.0)):
+            pass
+    except OSError:
+        issues.append("llm")
+    try:
+        with urllib.request.urlopen(
+            f"http://{FROM_HOST}:{FROM_PORT}/api/tags", timeout=min(timeout, 2.0)
+        ) as r:
+            if not json.loads(r.read().decode("utf-8")).get("models"):
+                issues.append("llm")
+    except Exception:
+        issues.append("llm")
+    for name, port in MCP_PROBES:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=min(timeout, 1.0)):
+                pass
+        except OSError:
+            issues.append(name)
+    return (not issues, issues)
 
 PAGE = """<!DOCTYPE html>
 <html lang="zh">
@@ -79,7 +111,17 @@ go.onclick=send; q.onkeydown=e=>{ if(e.key==='Enter') send(); };
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if urlparse(self.path).path != "/":
+        path = urlparse(self.path).path
+        if path == "/api/health":
+            ok, issues = healthcheck()
+            body = json.dumps({"ok": ok, "issues": issues}, ensure_ascii=False).encode("utf-8")
+            self.send_response(200 if ok else 503)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path != "/":
             self.send_response(404); self.end_headers(); return
         body = PAGE.encode("utf-8")
         self.send_response(200)
@@ -96,15 +138,21 @@ class Handler(BaseHTTPRequestHandler):
         question = (data.get("question") or "").strip()
         status, out = 200, err_to_dict("问题不能为空")
         if question:
-            t0 = time.time()
-            try:
-                trace = []
-                ans = agent(question, model="qwen2.5:14b", trace=trace)
-                out = {"answer": ans, "model": "qwen2.5:14b",
-                       "tools": [t["tool"] for t in trace],
-                       "elapsed_s": round(time.time() - t0, 1)}
-            except Exception as e:
-                status, out = 500, err_to_dict(str(e))
+            ok, issues = healthcheck()
+            if not ok:
+                status, out = 503, degraded_dict(issues)
+            else:
+                t0 = time.time()
+                try:
+                    trace = []
+                    allow = classify_profile(question)
+                    ans = agent(question, model="qwen2.5:14b", trace=trace, allow=allow)
+                    out = {"answer": ans, "model": "qwen2.5:14b",
+                           "tools": [t["tool"] for t in trace],
+                           "allow": allow,
+                           "elapsed_s": round(time.time() - t0, 1)}
+                except Exception as e:
+                    status, out = 500, err_to_dict(str(e))
         body = json.dumps(out, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -117,7 +165,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def err_to_dict(msg: str) -> dict:
-    return {"answer": "⚠ " + msg, "model": "", "elapsed_s": 0}
+    return {"answer": "⚠ 请求处理失败，请稍后再试。若持续异常请联系技术支持。 (" + msg + ")",
+            "model": "", "elapsed_s": 0}
+
+
+def degraded_dict(issues: list) -> dict:
+    if "llm" in issues:
+        tip = "底层 AI 服务未连接（模型服务不可用）"
+    else:
+        tip = "知识/业务数据服务不可用（" + ", ".join(issues) + "）"
+    return {"answer": "⚠ 知识助手暂时不可用：" + tip + "，当前无法安全返回内容，请稍后再试或联系技术支持。",
+            "model": "", "elapsed_s": 0}
 
 
 def main():

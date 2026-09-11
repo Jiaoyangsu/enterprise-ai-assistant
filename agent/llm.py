@@ -20,7 +20,7 @@ def chat(
     temperature: float = 0.2,
     max_tokens: int = 1024,
     json_mode: bool = False,
-    timeout: int = 180,
+    timeout: int = 60,
 ) -> str:
     """调用 OpenAI 兼容 chat/completions，返回 assistant 文本。"""
     payload = {
@@ -29,6 +29,7 @@ def chat(
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
+        "options": {"num_ctx": 16384},
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}

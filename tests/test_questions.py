@@ -52,8 +52,8 @@ _group1 = _g("员工信息", [
 _group2 = _g("年假/请假", [
     Question("我年假还剩几天？", "lookup_employee", "leave_balance", "L1"),
     Question("刘洋的剩余年假是多少？", "lookup_employee", "leave_balance", "L1"),
-    Question("帮我提交黄国栋2024-05-06到05-07的年假申请", "create_leave_request", "success", "L3"),
-    Question("帮我提交孙丽的年假申请，从5月6号休到5月10号", "create_leave_request", "success", "L4"),
+    Question("帮我提交黄国栋2024-05-06到05-07的年假申请", "blocked_write", None, "L3"),
+    Question("帮我提交孙丽的年假申请，从5月6号休到5月10号", "blocked_write", None, "L4"),
     Question("我请一个月的假期，年假不够怎么办？", "lookup_employee", "leave_balance", "L5"),
 ])
 
