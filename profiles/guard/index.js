@@ -247,6 +247,13 @@ function apply(ctx, config = {}) {
       finalText: finalText.slice(0, 400),
     });
     if (s.strikes > retryMax) {
+      logFeedback({
+        type: 'needs_human',
+        question: q.slice(0, 200),
+        strike: s.strikes,
+        issues: issues.slice(0, 5),
+        finalText: finalText.slice(0, 400),
+      });
       if (isPseudo && !s.nlForced) {
         s.nlForced = true;
         process.stderr.write(`[guard] pseudo-tool forced NL (final)\n`);

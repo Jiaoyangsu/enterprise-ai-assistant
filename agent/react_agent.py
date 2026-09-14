@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from llm import chat  # noqa: E402
 from boundaries import BOUNDARY_RULES  # noqa: E402
 from verifier import verify  # noqa: E402
+from workflow import detect_workflow, workflow_system  # noqa: E402
 
 MAX_STEPS = 6
 
@@ -322,8 +323,12 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
     else:
         allow_set = set(n for n in allow if n in READ_TOOLS)  # 白名单以读工具为上限，写工具永不给
     ctx = resolve_context(question)
+    wf_name = detect_workflow(question)
+    system = _render_system(allow_set)
+    if wf_name:
+        system += workflow_system(wf_name, question)
     messages = [
-        {"role": "system", "content": _render_system(allow_set)},
+        {"role": "system", "content": system},
         {"role": "user", "content": question},
     ]
 

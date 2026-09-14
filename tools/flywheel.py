@@ -36,6 +36,7 @@ CATEGORY = {
     "guarded": "被回检拦截(质量差)",
     "unanswered": '答"未写明"类(覆盖盲区)',
     "error": "请求失败(异常)",
+    "human": "人工已回填(可直接转评测种子)",
     "ok": "正常放行",
 }
 
@@ -55,6 +56,8 @@ def ensure_db():
 
 
 def classify(source: str, rec: dict) -> str:
+    if source == "human":
+        return "human"
     if source == "guard":
         t = rec.get("type")
         if t == "guarded":
@@ -63,6 +66,8 @@ def classify(source: str, rec: dict) -> str:
             return "unanswered"
         return "ok"
     if source == "web":
+        if rec.get("source") == "human":
+            return "human"
         if rec.get("status") == 500:
             return "error"
         ans = rec.get("answer", "")
@@ -101,8 +106,8 @@ def ingest():
                 row = cur.fetchone()
                 if row:
                     con.execute(
-                        "UPDATE samples SET seen=seen+1, ts=?, answer=?, issues=? WHERE id=?",
-                        (rec.get("ts", time.time()), answer[:2000], issues, row[0]),
+                        "UPDATE samples SET seen=seen+1, ts=?, answer=?, issues=?, category=? WHERE id=?",
+                        (rec.get("ts", time.time()), answer[:2000], issues, cat, row[0]),
                     )
                 else:
                     con.execute(
@@ -131,7 +136,7 @@ def report():
 
     cand = con.execute(
         "SELECT id,source,category,question,answer,issues,tools,seen FROM samples "
-        "WHERE category IN ('guarded','unanswered','error') AND promoted=0 "
+        "WHERE category IN ('guarded','unanswered','error','human') AND promoted=0 "
         "ORDER BY seen DESC, id DESC LIMIT 60"
     ).fetchall()
     if not cand:

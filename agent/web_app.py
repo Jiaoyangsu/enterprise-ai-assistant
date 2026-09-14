@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import sys
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +19,10 @@ sys.path.insert(0, HERE)
 from react_agent import agent, classify_profile  # noqa: E402
 
 FEEDBACK = os.environ.get("WEB_FEEDBACK", "/tmp/web_feedback.jsonl")
+HUMAN_QUEUE = os.environ.get("HUMAN_QUEUE", "/tmp/human_queue.jsonl")
+HUMAN_ANSWERS = os.environ.get("HUMAN_ANSWERS", "/tmp/human_answers.jsonl")
+GUARD_FEEDBACK = os.environ.get("GUARD_FEEDBACK", "/tmp/guard_feedback.jsonl")
+_human_lock = threading.Lock()
 
 
 def log_feedback(rec: dict):
@@ -26,6 +31,71 @@ def log_feedback(rec: dict):
             f.write(json.dumps({**{"ts": time.time()}, **rec}, ensure_ascii=False) + "\n")
     except OSError:
         pass
+
+
+def _append_jsonl(path: str, rec: dict):
+    with _human_lock:
+        with open(path, "a") as f:
+            f.write(json.dumps({**{"ts": time.time()}, **rec}, ensure_ascii=False) + "\n")
+
+
+def _read_jsonl(path: str) -> list:
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path) as f:
+            return [json.loads(l) for l in f if l.strip()]
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _answered_keys() -> set:
+    keys = set()
+    for r in _read_jsonl(HUMAN_ANSWERS):
+        if r.get("qhash"):
+            keys.add(r["qhash"])
+    return keys
+
+
+def _collect_human_queue() -> list:
+    keys = _answered_keys()
+    out = []
+    for r in _read_jsonl(HUMAN_QUEUE):
+        if r.get("type") != "needs_human":
+            continue
+        q = (r.get("question") or "").strip()
+        if not q:
+            continue
+        r["qhash"] = r.get("qhash") or json.dumps({"q": q}, ensure_ascii=False)
+        if r["qhash"] in keys:
+            continue
+        out.append(r)
+    for r in _read_jsonl(GUARD_FEEDBACK):
+        if r.get("type") != "needs_human":
+            continue
+        q = (r.get("question") or "").strip()
+        if not q:
+            continue
+        r["qhash"] = json.dumps({"q": q, "g": 1}, ensure_ascii=False)
+        if r["qhash"] in keys:
+            continue
+        out.append(r)
+    return out
+
+
+def queue_for_human(question: str, answer: str, reason: str):
+    ans = answer or ""
+    low = reason == "500" or not ans or any(
+        w in ans for w in ("未写明", "未提供", "未涉及", "未找到", "尚未明确", "不明确",
+                           "未公开", "请咨询", "咨询人力资源", "无法提供", "无法确认",
+                           "无权访问", "未在公开文档")
+    )
+    if low:
+        _append_jsonl(HUMAN_QUEUE, {
+            "type": "needs_human", "question": question, "reason": reason,
+            "system_answer": ans[:300],
+            "qhash": json.dumps({"q": question}, ensure_ascii=False),
+        })
 
 FROM_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
 FROM_HOST, FROM_PORT = FROM_BASE_URL.split("://")[1].split(":")[0], int(
@@ -119,6 +189,59 @@ go.onclick=send; q.onkeydown=e=>{ if(e.key==='Enter') send(); };
 </html>"""
 
 
+HUMAN_PAGE = """<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>人工兜底坐席</title>
+<style>
+  body { margin:0; font-family:-apple-system,"PingFang SC",sans-serif; background:#f5f6fa; padding:20px; }
+  h1 { font-size:18px; color:#2b3a55; }
+  .card { background:#fff; border-radius:10px; padding:14px 16px; margin:12px 0;
+          box-shadow:0 2px 8px rgba(0,0,0,.06); }
+  .q { font-weight:600; margin:0 0 6px; }
+  .meta { font-size:12px; color:#9aa3b2; margin-bottom:8px; }
+  .sys { font-size:13px; color:#666; background:#f2f4f8; border-radius:6px; padding:8px; margin:6px 0; }
+  textarea { width:100%; height:64px; border:1px solid #d4d9e2; border-radius:6px; padding:8px; font-size:14px; }
+  button { margin-top:8px; padding:8px 18px; border:0; border-radius:6px; background:#2b3a55; color:#fff; cursor:pointer; }
+  .none { color:#9aa3b2; }
+</style>
+</head>
+<body>
+<h1>人工兜底坐席 <small>系统搞不定的问题会进到这里，作答后自动回填评测飞轮</small></h1>
+<div id="list"><div class="card none">加载中…</div></div>
+<script>
+async function load(){
+  const r=await fetch('/api/human/list');
+  const d=await r.json();
+  const list=document.getElementById('list');
+  if(!d.items.length){ list.innerHTML='<div class="card none">暂无待处理问题</div>'; return; }
+  list.innerHTML='';
+  for(const it of d.items){
+    const c=document.createElement('div'); c.className='card';
+    c.innerHTML='<p class="q"></p><div class="meta"></div>'+
+      '<div class="sys"></div>'+
+      '<textarea placeholder="补充正确答案（留空=不处理即下线该问题）"></textarea>'+
+      '<button>提交回填</button>';
+    c.querySelector('.q').textContent=it.question;
+    c.querySelector('.meta').textContent='来源: '+(it.source||'')+' · 原因: '+(it.reason||'guard');
+    c.querySelector('.sys').textContent='系统回答: '+(it.system_answer||it.finalText||'') || '字段省略';
+    if(!it.system_answer && it.finalText) c.querySelector('.sys').textContent='系统回答: '+it.finalText;
+    c.querySelector('button').onclick=async ()=>{
+      const ans=c.querySelector('textarea').value.trim();
+      await fetch('/api/human/answer',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({qhash:it.qhash, answer:ans})});
+      load();
+    };
+    list.appendChild(c);
+  }
+}
+load();
+</script>
+</body>
+</html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
@@ -131,26 +254,52 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if path == "/api/human/list":
+            body = json.dumps({"items": _collect_human_queue()}, ensure_ascii=False).encode("utf-8")
+            self._send(200, body)
+            return
+        if path == "/human":
+            body = HUMAN_PAGE.encode("utf-8")
+            self._send(200, body, ctype="text/html; charset=utf-8")
+            return
         if path != "/":
             self.send_response(404); self.end_headers(); return
         body = PAGE.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self._send(200, body, ctype="text/html; charset=utf-8")
+
+    def _send(self, status: int, body: bytes, ctype: str = "application/json; charset=utf-8"):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/chat":
-            self.send_response(404); self.end_headers(); return
+        path = urlparse(self.path).path
         n = int(self.headers.get("Content-Length", 0))
         data = json.loads(self.rfile.read(n) or b"{}")
+        if path == "/api/human/answer":
+            qhash = (data.get("qhash") or "").strip()
+            ans = (data.get("answer") or "").strip()
+            _append_jsonl(HUMAN_ANSWERS, {"qhash": qhash, "answer": ans[:2000]})
+            if ans and qhash:
+                try:
+                    q = json.loads(qhash).get("q", "")
+                    if q:
+                        log_feedback({"source": "human", "question": q, "answer": ans})
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+            self._send(200, json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8"))
+            return
+        if path != "/api/chat":
+            self.send_response(404); self.end_headers(); return
         question = (data.get("question") or "").strip()
         status, out = 200, err_to_dict("问题不能为空")
         if question:
             ok, issues = healthcheck()
             if not ok:
                 status, out = 503, degraded_dict(issues)
+                queue_for_human(question, "", "降级:" + ",".join(issues))
             else:
                 t0 = time.time()
                 try:
@@ -164,16 +313,14 @@ class Handler(BaseHTTPRequestHandler):
                     log_feedback({"source": "web", "question": question,
                                   "answer": ans, "tools": [t["tool"] for t in trace],
                                   "elapsed_s": out["elapsed_s"], "status": 200})
+                    queue_for_human(question, ans, "不确定性")
                 except Exception as e:
                     status, out = 500, err_to_dict(str(e))
                     log_feedback({"source": "web", "question": question, "status": 500,
                                   "err": str(e)[:200]})
+                    queue_for_human(question, "", "500")
         body = json.dumps(out, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._send(status, body)
 
     def log_message(self, *a):
         pass
