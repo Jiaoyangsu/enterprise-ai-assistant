@@ -8,13 +8,16 @@
 候选经人工标注 expected 后可回灌评测集（见 report 输出指引）。
 
 用法:
-  python3 tools/flywheel.py ingest   # 摄入 jsonl -> db
-  python3 tools/flywheel.py report   # 统计 + 候选清单 md
+  python3 tools/flywheel.py ingest           # 摄入 jsonl -> db
+  python3 tools/flywheel.py report           # 统计 + 候选清单 md（人工填 expected 列）
+  python3 tools/flywheel.py promote          # 把已标 expected 的候选 -> 评测集(print cases+benchmark.jsonl)
+  python3 tools/flywheel.py bench            # 用评测集跑 react_agent，计算通过率
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -51,8 +54,18 @@ def ensure_db():
         "answer TEXT, issues TEXT, tools TEXT, category TEXT,"
         "seen INTEGER DEFAULT 1, promoted INTEGER DEFAULT 0)"
     )
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS cases("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "question TEXT UNIQUE, expected TEXT, source TEXT, category TEXT,"
+        "created REAL DEFAULT 0)"
+    )
     con.commit()
     return con
+
+
+BENCH_JSON = os.path.join(FLY_DIR, "benchmark.jsonl")
+DOCS_MD = os.path.join(FLY_DIR, "promote_docs.md")
 
 
 def classify(source: str, rec: dict) -> str:
@@ -150,23 +163,129 @@ def report():
         "| # | 来源 | 类别 | 问题 | 期望(expected) | 工具/拦截原因 | 次数 |",
         "|---|------|------|------|----------------|--------------|-----:|",
     ]
-    for idx, (sid, source, cat, question, _answer, issues, _tools, seen) in enumerate(cand, 1):
-        short_q = question.replace("|", "/")[:60]
+    prev_exp = _last_expected()  # 保留上一版人工标注，避免 re-report 丢失
+    for idx, (sid, source, cat, question, answer, issues, _tools, seen) in enumerate(cand, 1):
+        q = question.replace("|", "/")
         short_i = (issues or "")[:90].replace("|", "/")
+        expected = prev_exp.get(question, "")
+        if not expected and cat == "human" and answer:
+            expected = " ".join(answer.split())[:80]  # 人工已答即期望答案，promote 时自动录取
         lines.append(
-            f"| {idx} | {source} | {CATEGORY.get(cat, cat)} | {short_q} |  | {short_i} | {seen} |"
+            f"| {idx} | {source} | {CATEGORY.get(cat, cat)} | {q} | {expected} | {short_i} | {seen} |"
         )
     md = "\n".join(lines) + "\n"
     with open(CAND_MD, "w") as f:
         f.write(md)
-    print(f"候选清单已写入 {CAND_MD}（{len(cand)} 条，可人工标注 expected）")
+    print(f"候选清单已写入 {CAND_MD}（{len(cand)} 条，human 类别已自动预填 expected）")
     con.close()
+
+
+def _last_expected() -> dict:
+    """读上一版 candidates.md 中人工填写的 expected（question->expected）。"""
+    if not os.path.exists(CAND_MD):
+        return {}
+    out = {}
+    for line in open(CAND_MD, encoding="utf-8"):
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 5 and cells[3]:
+            out[cells[3]] = cells[4] if cells[4] else ""
+    return out
+
+
+def promote():
+    con = ensure_db()
+    rows = []
+    for line in open(CAND_MD, encoding="utf-8"):
+        if "|---" in line:
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 5 or not cells[0].strip().isdigit():
+            continue
+        question = cells[3]
+        expected = cells[4]
+        if not expected or expected.isspace():
+            continue
+        rows.append((question, expected, cells[1]))
+    if not rows:
+        print("候选清单中没有已标注 expected 的样本。")
+        return
+    cases = []
+    for i, (question, expected, md_source) in enumerate(rows, 1):
+        row = con.execute(
+            "SELECT id, source, category FROM samples WHERE question=? ORDER BY id DESC LIMIT 1",
+            (question,),
+        ).fetchone()
+        source = (row or (None, md_source, ""))[1]
+        cat = (row or (None, "", ""))[2]
+        t = time.time()
+        con.execute(
+            "INSERT OR IGNORE INTO cases(question, expected, source, category, created) VALUES(?,?,?,?,?)",
+            (question, expected, source, cat, t),
+        )
+        if row:
+            con.execute("UPDATE samples SET promoted=1 WHERE id=?", (row[0],))
+        print(f"[{i}] 评测题已收录: {question[:45]}  <- {CATEGORY.get(cat, md_source)}")
+        cases.append({"question": question, "expected": expected, "source": source, "category": cat})
+    con.commit()
+    with open(BENCH_JSON, "w") as f:
+        for c in cases:
+            f.write(json.dumps(c, ensure_ascii=False) + "\n")
+    with open(DOCS_MD, "w") as f:
+        f.write("# 新知识条目草案（人工核对后落库到 documents_extra）\n\n")
+        for c in cases:
+            if c["category"] in ("human", "unanswered"):
+                f.write(f"- 问题：{c['question']}\n  回答(待核对)：{c['expected']}\n")
+    con.close()
+    print(f"评测集已写入 {BENCH_JSON}（{len(cases)} 条）；知识条目标注见 {DOCS_MD}")
+
+
+def judge(expected: str, ans: str) -> tuple[bool, str]:
+    clauses = [c for c in re.split(r"[。！？；;，,\n]", expected) if len(c) >= 6]
+    num_clauses = [c for c in clauses if re.search(r"\d", c)]
+    if num_clauses:
+        ok = all(any(d in ans for d in re.findall(r"\d+(?:\.\d+)?", c)) for c in num_clauses)
+        evidence = "数字断言:" + "/".join(re.findall(r"\d+(?:\.\d+)?", "".join(num_clauses)))
+    elif clauses:
+        ok = any(c in ans for c in clauses)
+        evidence = "句片命中:" + clauses[0][:30]
+    else:
+        ok = expected in ans
+        evidence = "全文包含"
+    return ok, evidence
+
+
+def bench():
+    if not os.path.exists(BENCH_JSON):
+        print("尚无评测集，先跑 promote。")
+        return
+    sys.path.insert(0, os.path.join(HERE, "..", "agent"))
+    try:
+        from react_agent import agent
+    except ModuleNotFoundError:
+        print("bench 需要项目依赖：请用 .venv/bin/python tools/flywheel.py bench")
+        return
+    cases = [json.loads(l) for l in open(BENCH_JSON, encoding="utf-8")]
+    ok_cnt = 0
+    for i, c in enumerate(cases, 1):
+        try:
+            ans = agent(c["question"])
+        except Exception as e:
+            print(f"[{i}] {c['question'][:40]}  -> FAIL(异常 {e})")
+            continue
+        ok, ev = judge(c["expected"], ans)
+        ok_cnt += ok
+        print(f"[{i}] {'PASS' if ok else 'FAIL'} {c['question'][:38]} | {ev}")
+    print(f"== bench {ok_cnt}/{len(cases)} ==")
 
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "report"
     if cmd == "ingest":
         ingest()
+    elif cmd == "promote":
+        promote()
+    elif cmd == "bench":
+        bench()
     else:
         report()
 
