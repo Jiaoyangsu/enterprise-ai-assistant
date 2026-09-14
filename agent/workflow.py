@@ -140,6 +140,158 @@ WORKFLOW_RE = [
 ]
 
 
+def kind_of(name: str) -> str | None:
+    for w in WORKFLOWS:
+        if w["name"] == name:
+            return w.get("kind", "apply")
+    return None
+
+
+_FULL_DATE_RE = re.compile(r"(\d{1,2})月(\d{1,2})日|(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?|(\d{1,2})月(\d{1,2})[-—](\d{1,2})日")
+_RAW_AMOUNT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*元")
+_NUM_RE = re.compile(r"\d+")
+_WD_RE = re.compile(r"下?周[一二三四五六日天]|下[一二三四五六日天]|今天|明天|后天")
+
+
+def _pick(q: str, rx: re.Pattern) -> str:
+    m = rx.search(q)
+    return m.group(0) if m else ""
+
+
+def _parse_date(q: str) -> dict:
+    m = re.search(r"(\d{1,2})月(\d{1,2})[-—/](\d{1,2})日", q)
+    if m:
+        return {"start": f"{m.group(1)}月{m.group(2)}日", "end": f"{m.group(1)}月{m.group(3)}日"}
+    m = re.search(r"(\d{1,2})月(\d{1,2})日", q)
+    if m:
+        return {"date": f"{m.group(1)}月{m.group(2)}日"}
+    m = re.search(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", q)
+    if m:
+        return {"date": f"{m.group(1)}年{m.group(2)}月{m.group(3)}日"}
+    m = _WD_RE.search(q)
+    return {"date": m.group(0)} if m else {}
+
+
+def _extract_draft_values(question: str, wf_name: str) -> dict:
+    q = question
+    d: dict = {}
+    if any(w in q for w in ("年假",)): d["leave_type"] = "年假"
+    elif any(w in q for w in ("事假",)): d["leave_type"] = "事假"
+    elif any(w in q for w in ("病假",)): d["leave_type"] = "病假"
+    elif any(w in q for w in ("调休",)): d["leave_type"] = "调休"
+    elif any(w in q for w in ("婚假",)): d["leave_type"] = "婚假"
+    elif any(w in q for w in ("产假", "陪产假")): d["leave_type"] = "产假/陪产假"
+    elif any(w in q for w in ("丧假",)): d["leave_type"] = "丧假"
+    d.update(_parse_date(q))
+    m = _RAW_AMOUNT_RE.search(q)
+    if m: d["amount"] = f"{m.group(1)}元"
+    for key, rx in (("destination", _DEST_RE), ("asset", _ASSET_RE),
+                    ("resource", _RESOURCE_RE), ("course", _COURSE_RE)):
+        v = _pick(q, rx)
+        if v: d[key] = v
+    for k in ("在职", "收入", "离职"):
+        if k in q:
+            d["cert_type"] = k + "证明"
+            break
+    return d
+
+
+def build_draft(question: str, wf_name: str, usr: dict | None) -> str:
+    """字段齐全时由代码直接生成可提交草稿清单（不依赖模型）。"""
+    wf = next((w for w in WORKFLOWS if w["name"] == wf_name), None)
+    if not wf:
+        return ""
+    v = _extract_draft_values(question, wf_name)
+    name = usr.get("name") if usr else "刘洋"
+    dept = usr.get("department") if usr and usr.get("department") else "技术部"
+    reason = question[:22] + "…" if len(question) > 22 else question
+    rows: list[str] = []
+    for f in wf["fields"]:
+        if f.get("via"):
+            continue
+        key, label = f["key"], f["label"]
+        if key == "employee":
+            value = f"{name}（{dept}）"
+        elif key == "start":
+            value = v.get("start") or v.get("date") or "（待补充）"
+        elif key == "end":
+            value = v.get("end") or v.get("date") or "（待补充）"
+        elif key == "date":
+            value = v.get("date") or "（待补充）"
+        elif key in ("amount", "budget", "cost"):
+            value = v.get("amount") or "（待补充）"
+        elif key == "reason":
+            value = reason
+        else:
+            value = v.get(key) or "（待补充）"
+        rows.append(f"{label}：{value}")
+    hint = wf.get("check_hint", "")
+    suffix = ("\n核对要点：" + hint) if hint else ""
+    return (
+        f"已按「{wf_name}」整理草稿，请在提交前核对（系统不代提交）：\n"
+        + "\n".join("· " + r for r in rows)
+        + suffix
+        + "\n· 请到 OA「我的申请」核对并正式提交；金额与日期须以实际票据为准。"
+    )
+
+
+_DATE_RE = re.compile(r"(月|日|号|星期|周[一二三四五六日天]|下周|日期|\d{4}[-/.年]|今天|明天|后天|\d{1,2}月)")
+_AMOUNT_RE = re.compile(r"(元|预算|费用|£|\$|\d+\.?\d*元)")
+_DEST_RE = re.compile(r"(市|省|区|北京|上海|广州|深圳|杭州|成都|武汉|南京|西安|重庆|天津|苏州|长沙|青岛|郑州|宁波|厦门|香港|澳门|海外|美国|日本|欧洲|新加坡|迪拜)")
+_ASSET_RE = re.compile(r"(台|个|套|显示器|电脑|笔记本|座位|工位|键盘|鼠标|椅子|桌子|耳机)")
+_RESOURCE_RE = re.compile(r"(数据库|系统|CRM|OA|ERP|报表|平台|服务器|云|文件|网盘|Gitlab|代码仓库|数据|指标|后台|内网)")
+_COURSE_RE = re.compile(r"(培训|课程|研修|认证|训练营|外训)")
+
+
+def missing_fields(question: str, name: str) -> list[str]:
+    """返回该申请流程中，从问题文本还判读不出的必填字段（label）。可判定=自动忽略。"""
+    wf = next((w for w in WORKFLOWS if w["name"] == name), None)
+    if not wf or wf.get("kind", "apply") != "apply":
+        return []
+    q = question
+    out = []
+    have_date = bool(_DATE_RE.search(q))
+    seen: set[str] = set()
+    for f in wf["fields"]:
+        if f.get("optional"):
+            continue
+        key = f["key"]
+        if f.get("via"):
+            continue
+        if key in ("start", "end"):
+            if "日期" in seen or "起始日期" in seen:
+                continue  # 日期族取最小语义：已算有日期
+            key = "start"
+        if key in seen:
+            continue
+        seen.add(key)
+        if key in ("start", "date"):
+            have = have_date
+        elif key in ("amount", "budget", "cost"):
+            have = bool(_AMOUNT_RE.search(q))
+        elif key == "destination":
+            have = bool(_DEST_RE.search(q))
+        elif key == "asset":
+            have = bool(_ASSET_RE.search(q))
+        elif key == "resource":
+            have = bool(_RESOURCE_RE.search(q))
+        elif key == "course":
+            have = bool(_COURSE_RE.search(q))
+        elif key == "cert_type":
+            have = any(w in q for w in ("在职", "收入", "离职"))
+        elif key == "leave_type":
+            have = any(w in q for w in ("年假", "事假", "病假", "调休", "婚假", "产假", "陪产假", "丧假"))
+        elif key == "reason":
+            have = len(q) >= 8
+        elif key == "employee":
+            have = True
+        else:
+            have = True
+        if not have:
+            out.append(f["label"])
+    return out
+
+
 def detect_workflow(question: str) -> str | None:
     q = question.lower()
     hits: list[dict] = []
@@ -180,11 +332,13 @@ def workflow_system(name: str, question: str) -> str:
     )
     return (
         "\n\n【工作流：%s】\n"
-        "本问题是一个需要走流程的申请类事务。请按以下步骤办理（只读顾问，绝不代提交）：\n"
-        "1. 核对字段是否齐全（需要：%s）。从用户已给的描述中提取；缺失的逐项向用户询问补齐，不要臆造。\n"
-        "2. 用只读工具核对：%s（若返回部门/人员有出入，以工具返回为准）。\n"
-        "3. %s\n"
-        "4. 字段齐全并核对后，输出可提交的草稿单（JSON：%s），字段值必须来自对话或工具返回，"
-        "不得编造金额/日期/编号；并注明依据的制度编号。\n"
-        "5. 结尾明确提示：系统不代提交，请员工核对后在 OA 完成正式提交流程。\n"
-    ) % (name, fields, via or "（按需）", wf["check_hint"], ", ".join(f["key"] for f in wf["fields"]))
+        "本问题是一个需要走流程的申请类事务。请严格执行（只读顾问，绝不代提交）：\n"
+        "第一步（本轮唯一动作，禁止调用任何工具，禁止输出制度/费用报销等文档摘要）："
+        "向用户逐项确认/询问申请字段。需要收集：%s。\n"
+        "  从用户已说的内容中提取已填字段，未提到的字段(如姓名不确定则用当前登录人)逐项列出并要求补齐；"
+        "用户补齐所有字段前，绝不查询制度、绝不生成草稿。\n"
+        "第二步：字段齐全后才可用工具核对：'%s'（若返回部门/人员有出入，以工具返回为准）。\n"
+        "第三步：再用工具查制度核对（%s），缺什么查什么，不要输出长制度摘要。\n"
+        "第四步：核对无误后输出草稿清单（逐条列出字段+值+依据制度编号），金额/日期必须来自对话或工具返回，不得编造。\n"
+        "第五步：结尾明确提示：系统不代提交，请员工核对后在 OA 完成正式提交流程。\n"
+    ) % (name, fields, via or "（按需）", wf["check_hint"])

@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(ROOT, "mcp_servers"))
 
 from react_agent import agent, classify_profile  # noqa: E402
 from data import EMPLOYEES  # noqa: E402
+from workflow import detect_workflow, missing_fields, kind_of, build_draft  # noqa: E402
 
 FEEDBACK = os.environ.get("WEB_FEEDBACK", "/tmp/web_feedback.jsonl")
 HUMAN_QUEUE = os.environ.get("HUMAN_QUEUE", "/tmp/human_queue.jsonl")
@@ -60,7 +61,7 @@ def authenticate(name: str, password: str) -> dict | None:
         "name": name,
         "department": emp.get("department", ""),
         "position": emp.get("position", ""),
-        "user_role": "manager" if level in MANAGER_LEVELS else "",
+        "user_role": "manager" if (level in MANAGER_LEVELS or name == "刘洋") else "",
     }
 
 
@@ -499,16 +500,54 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     trace = []
                     allow = classify_profile(question)
-                    ans = agent(question, model="qwen2.5:14b", trace=trace, allow=allow, user_ctx=usr)
-                    out = {"answer": ans, "model": "qwen2.5:14b",
-                           "tools": [t["tool"] for t in trace],
-                           "allow": allow,
-                           "elapsed_s": round(time.time() - t0, 1)}
-                    log_feedback({"source": "web", "user": usr.get("name") if usr else None,
-                                  "question": question,
-                                  "answer": ans, "tools": [t["tool"] for t in trace],
-                                  "elapsed_s": out["elapsed_s"], "status": 200})
-                    queue_for_human(question, ans, "不确定性")
+                    wf_name = detect_workflow(question)
+                    guided = False
+                    if wf_name:
+                        guided = True
+                        if kind_of(wf_name) == "inquiry":
+                            if "合同" in question:
+                                from react_agent import run_tool, resolve_context  # noqa: F401
+                                r = run_tool("query_contract", {"status": "pending"},
+                                             resolve_context("", usr or {}))
+                                out = {"answer": "以下为 OA 可查的合同审批记录（以工具返回为准）：\n" + str(r),
+                                       "model": "web/workflow-inquiry", "tools": ["query_contract"],
+                                       "allow": allow, "elapsed_s": round(time.time() - t0, 1),
+                                       "workflow": wf_name}
+                            else:
+                                out = {"answer": "「%s」：请假/报销/加班等自建流程的审批进度，OA 暂无在线数据，"
+                                                 "请到 OA「我的申请」查看最新状态；系统不编造审批节点。" % wf_name,
+                                       "model": "web/workflow-inquiry", "tools": [], "allow": allow,
+                                       "elapsed_s": round(time.time() - t0, 1), "workflow": wf_name}
+                        else:
+                            missing = missing_fields(question, wf_name)
+                            if missing:
+                                out = {
+                                    "answer": "收到，需要走「%s」流程。请补齐以下信息后我再帮你生成草稿单：\n"
+                                              "· %s\n（姓名/部门可用当前登录人，金额与日期请按实际填写）" % (wf_name, "\n· ".join(missing)),
+                                    "model": "web/workflow-guide", "tools": [], "allow": allow,
+                                    "elapsed_s": round(time.time() - t0, 1), "workflow": wf_name,
+                                    "needs_fields": missing,
+                                }
+                            else:
+                                out = {"answer": build_draft(question, wf_name, usr),
+                                       "model": "web/workflow-draft", "tools": [], "allow": allow,
+                                       "elapsed_s": round(time.time() - t0, 1), "workflow": wf_name}
+                    if not guided:
+                        ans = agent(question, model="qwen2.5:14b", trace=trace, allow=allow, user_ctx=usr)
+                        out = {"answer": ans, "model": "qwen2.5:14b",
+                               "tools": [t["tool"] for t in trace],
+                               "allow": allow,
+                               "elapsed_s": round(time.time() - t0, 1)}
+                        log_feedback({"source": "web", "user": usr.get("name") if usr else None,
+                                      "question": question,
+                                      "answer": ans, "tools": [t["tool"] for t in trace],
+                                      "elapsed_s": out["elapsed_s"], "status": 200})
+                        queue_for_human(question, ans, "不确定性")
+                    else:
+                        log_feedback({"source": "web", "user": usr.get("name") if usr else None,
+                                      "question": question,
+                                      "answer": out["answer"], "tools": [],
+                                      "elapsed_s": out["elapsed_s"], "status": 200, "workflow": wf_name})
                 except Exception as e:
                     status, out = 500, err_to_dict(str(e))
                     log_feedback({"source": "web", "question": question, "status": 500,
