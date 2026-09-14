@@ -5,6 +5,7 @@
 """
 import json
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -14,15 +15,89 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(ROOT, "mcp_servers"))
 
 from react_agent import agent, classify_profile  # noqa: E402
+from data import EMPLOYEES  # noqa: E402
 
 FEEDBACK = os.environ.get("WEB_FEEDBACK", "/tmp/web_feedback.jsonl")
 HUMAN_QUEUE = os.environ.get("HUMAN_QUEUE", "/tmp/human_queue.jsonl")
 HUMAN_ANSWERS = os.environ.get("HUMAN_ANSWERS", "/tmp/human_answers.jsonl")
 GUARD_FEEDBACK = os.environ.get("GUARD_FEEDBACK", "/tmp/guard_feedback.jsonl")
+AUTH_FILE = os.path.join(ROOT, "auth_users.json")
 _human_lock = threading.Lock()
+
+MANAGER_LEVELS = {"D1", "D2", "M1", "M2"}
+DEFAULT_PASSWORD = os.environ.get("AUTH_DEFAULT_PASSWORD", "123456")
+
+# ===== 登录会话（内存 session；Auth 即企业员工目录 + 密码表） =====
+_sessions: dict = {}
+_session_lock = threading.Lock()
+SESSION_HOURS = float(os.environ.get("SESSION_HOURS", "12"))
+
+
+def _auth_store() -> dict:
+    try:
+        with open(AUTH_FILE) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def authenticate(name: str, password: str) -> dict | None:
+    """校验姓名+密码，返回该员工的登录上下文；失败返回 None。"""
+    emp = EMPLOYEES.get(name)
+    if not emp:
+        return None
+    store = _auth_store()
+    expected = store.get(name, store.get("*", DEFAULT_PASSWORD))
+    if password != expected:
+        return None
+    level = emp.get("level", "")
+    return {
+        "name": name,
+        "department": emp.get("department", ""),
+        "position": emp.get("position", ""),
+        "user_role": "manager" if level in MANAGER_LEVELS else "",
+    }
+
+
+def new_session(user: dict) -> str:
+    tok = secrets.token_hex(16)
+    with _session_lock:
+        _sessions[tok] = {**user, "exp": time.time() + SESSION_HOURS * 3600}
+    return tok
+
+
+def session_user(tok: str | None) -> dict | None:
+    if not tok:
+        return None
+    with _session_lock:
+        s = _sessions.get(tok)
+        if not s:
+            return None
+        if s["exp"] < time.time():
+            _sessions.pop(tok, None)
+            return None
+        return {k: v for k, v in s.items() if k != "exp"}
+
+
+def drop_session(tok: str | None):
+    if tok:
+        with _session_lock:
+            _sessions.pop(tok, None)
+
+
+def _get_token(cookie: str | None) -> str | None:
+    if not cookie:
+        return None
+    for part in cookie.split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == "tok" and v:
+            return v
+    return None
 
 
 def log_feedback(rec: dict):
@@ -135,8 +210,11 @@ PAGE = """<!DOCTYPE html>
 <style>
   * { box-sizing: border-box; }
   body { margin:0; font-family:-apple-system,"PingFang SC",sans-serif; background:#f5f6fa; }
-  header { background:#2b3a55; color:#fff; padding:14px 20px; font-weight:600; }
+  header { background:#2b3a55; color:#fff; padding:14px 20px; font-weight:600;
+           display:flex; justify-content:space-between; align-items:center; }
   header span { font-size:13px; font-weight:400; opacity:.8; margin-left:10px; }
+  #who { font-size:13px; font-weight:400; opacity:.9; display:flex; gap:12px; align-items:center; }
+  #who a { color:#fff; cursor:pointer; text-decoration:underline; }
   #box { max-width:760px; margin:18px auto; height:calc(100vh - 150px);
          overflow-y:auto; padding:12px; background:#fff; border-radius:10px;
          box-shadow:0 2px 8px rgba(0,0,0,.08); }
@@ -153,7 +231,9 @@ PAGE = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<header>企业知识库 AI 助手 <span>qwen2.5:14b · ReAct · 真实工具</span></header>
+<header>企业知识库 AI 助手 <span>qwen2.5:14b · ReAct · 真实工具</span>
+  <div id="who"></div>
+</header>
 <div id="box">
   <div class="m a"><div class="b">你好，我是企业知识库助手。可以问我：员工信息、年假、部门预算、客户/合同、制度条文、脱敏/风险检查等。试试「技术部预算多少？」</div></div>
 </div>
@@ -163,6 +243,18 @@ PAGE = """<!DOCTYPE html>
 </div>
 <script>
 const box=document.getElementById('box'), q=document.getElementById('q'), go=document.getElementById('go');
+const who=document.getElementById('who');
+(async function(){
+  try{
+    const r=await fetch('/api/me'); const d=await r.json();
+    if(d.ok){
+      who.textContent=(d.user.name||'')+' · '+(d.user.position||'')+(d.user.user_role==='manager'?' · 经理权限':'');
+      const a=document.createElement('a'); a.textContent='退出';
+      a.onclick=async()=>{ await fetch('/api/logout',{method:'POST'}); location.href='/login'; };
+      who.appendChild(a);
+    }
+  }catch(_){}
+})();
 function add(role, text, tag){
   const d=document.createElement('div'); d.className='m '+role;
   const b=document.createElement('div'); b.className='b'; b.textContent=text;
@@ -184,6 +276,56 @@ async function send(){
   go.disabled=false; q.focus();
 }
 go.onclick=send; q.onkeydown=e=>{ if(e.key==='Enter') send(); };
+</script>
+</body>
+</html>"""
+
+
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>登录 · 企业知识库 AI 助手</title>
+<style>
+  body { margin:0; font-family:-apple-system,"PingFang SC",sans-serif; background:#f5f6fa;
+         display:flex; align-items:center; justify-content:center; height:100vh; }
+  .card { background:#fff; width:340px; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,.08); padding:30px 28px; }
+  h1 { font-size:18px; margin:0 0 4px; color:#2b3a55; }
+  p { font-size:12px; color:#9aa3b2; margin:0 0 18px; }
+  label { font-size:13px; color:#555; display:block; margin:12px 0 6px; }
+  input { width:100%; padding:11px 12px; border:1px solid #d4d9e2; border-radius:8px; font-size:15px; box-sizing:border-box; }
+  button { width:100%; margin-top:20px; padding:12px; border:0; border-radius:8px; background:#2b3a55;
+           color:#fff; font-size:15px; cursor:pointer; }
+  button:disabled { opacity:.5; }
+  .err { color:#c0392b; font-size:13px; margin-top:10px; min-height:18px; }
+  .hint { font-size:11px; color:#b0b7c4; margin-top:14px; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>企业知识库</h1>
+  <p>请使用企业账号登录（员工姓名）</p>
+  <form id="f">
+    <label for="name">姓名</label>
+    <input id="name" placeholder="例如：刘洋" autocomplete="username">
+    <label for="pwd">密码</label>
+    <input id="pwd" type="password" placeholder="默认 123456" autocomplete="current-password">
+    <button id="go">登 录</button>
+  </form>
+  <div class="err" id="err"></div>
+  <div class="hint">演示环境：任意在职员工可用默认密码 123456 登录；经理职级（D1/D2/M1/M2）可见客户信息。<br>
+  密码表：auth_users.json（可加人/改密）。</div>
+</div>
+<script>
+const f=document.getElementById('f'), err=document.getElementById('err');
+f.onsubmit=async e=>{ e.preventDefault(); err.textContent=''; const go=document.getElementById('go');
+  go.disabled=true;
+  const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:document.getElementById('name').value.trim(),
+                         password:document.getElementById('pwd').value})});
+  const d=await r.json(); go.disabled=false;
+  if(d.ok){ location.href='/'; } else { err.textContent=d.message||'登录失败'; }
+};
 </script>
 </body>
 </html>"""
@@ -254,10 +396,31 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if path == "/login":
+            body = LOGIN_PAGE.encode("utf-8")
+            self._send(200, body, ctype="text/html; charset=utf-8")
+            return
+        tok = _get_token(self.headers.get("Cookie"))
+        if path == "/api/me":
+            u = session_user(tok)
+            if not u:
+                self._send(401, json.dumps({"ok": False, "message": "未登录"}, ensure_ascii=False).encode("utf-8"))
+            else:
+                self._send(200, json.dumps({"ok": True, "user": u}, ensure_ascii=False).encode("utf-8"))
+            return
         if path == "/api/human/list":
+            if not session_user(tok):
+                self._send(401, json.dumps({"ok": False, "message": "未登录"}, ensure_ascii=False).encode("utf-8"))
+                return
             body = json.dumps({"items": _collect_human_queue()}, ensure_ascii=False).encode("utf-8")
             self._send(200, body)
             return
+        if path in ("/", "/human"):
+            if not session_user(tok):
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers()
+                return
         if path == "/human":
             body = HUMAN_PAGE.encode("utf-8")
             self._send(200, body, ctype="text/html; charset=utf-8")
@@ -278,6 +441,36 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         n = int(self.headers.get("Content-Length", 0))
         data = json.loads(self.rfile.read(n) or b"{}")
+        if path == "/api/login":
+            name = (data.get("name") or "").strip()
+            pwd = data.get("password") or ""
+            user = authenticate(name, pwd)
+            if not user:
+                self._send(401, json.dumps({"ok": False, "message": "姓名或密码错误"}, ensure_ascii=False).encode("utf-8"))
+                return
+            tok = new_session(user)
+            body = json.dumps({"ok": True, "user": user}, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Set-Cookie", f"tok={tok}; HttpOnly; Path=/; Max-Age={int(SESSION_HOURS * 3600)}")
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        tok = _get_token(self.headers.get("Cookie"))
+        if path == "/api/logout":
+            drop_session(tok)
+            body = json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Set-Cookie", "tok=; HttpOnly; Path=/; Max-Age=0")
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if not session_user(tok):
+            self._send(401, json.dumps({"answer": "未登录或会话已过期，请先登录后再提问。", "model": "", "elapsed_s": 0}, ensure_ascii=False).encode("utf-8"))
+            return
         if path == "/api/human/answer":
             qhash = (data.get("qhash") or "").strip()
             ans = (data.get("answer") or "").strip()
@@ -294,6 +487,7 @@ class Handler(BaseHTTPRequestHandler):
         if path != "/api/chat":
             self.send_response(404); self.end_headers(); return
         question = (data.get("question") or "").strip()
+        usr = session_user(tok)
         status, out = 200, err_to_dict("问题不能为空")
         if question:
             ok, issues = healthcheck()
@@ -305,12 +499,13 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     trace = []
                     allow = classify_profile(question)
-                    ans = agent(question, model="qwen2.5:14b", trace=trace, allow=allow)
+                    ans = agent(question, model="qwen2.5:14b", trace=trace, allow=allow, user_ctx=usr)
                     out = {"answer": ans, "model": "qwen2.5:14b",
                            "tools": [t["tool"] for t in trace],
                            "allow": allow,
                            "elapsed_s": round(time.time() - t0, 1)}
-                    log_feedback({"source": "web", "question": question,
+                    log_feedback({"source": "web", "user": usr.get("name") if usr else None,
+                                  "question": question,
                                   "answer": ans, "tools": [t["tool"] for t in trace],
                                   "elapsed_s": out["elapsed_s"], "status": 200})
                     queue_for_human(question, ans, "不确定性")

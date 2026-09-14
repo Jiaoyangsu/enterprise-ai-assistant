@@ -135,8 +135,8 @@ _SYSTEM_TEMPLATE = """你是企业知识库 AI 助手。你通过调用工具获
 - 其余：先从上面白名单工具里找最贴近的；确实无关则拒绝（见边界）。
 
 2. 身份上下文（由系统注入，仅用于填充工具参数；不影响工具选择，也不影响任何判定）：
-- 当前会话用户：刘洋（技术部）。问题中的"我/我的/帮我"均指刘洋，调工具时参数填"刘洋"。
-- 权限：已登录，具备查看客户信息的 manager 权限；除非问题明确说"没有登录/未登录"（此时无客户查看权限）。
+- 当前会话用户：{USER_NAME}（{USER_DEPT}）。问题中的"我/我的/帮我"均指{USER_NAME}，调工具时参数填"{USER_NAME}"。
+- 权限：{USER_AUTH}。除非问题明确说"没有登录/未登录"（此时无客户查看权限）。
 - 模型无需把身份当作复杂度信号——它只影响 args 里的 name/department 等字段。
 
 3. 流程（每次只输出一个 JSON 对象，不要输出 JSON 以外的解释文字）：
@@ -165,7 +165,7 @@ _SYSTEM_TEMPLATE = """你是企业知识库 AI 助手。你通过调用工具获
 """
 
 
-def _render_system(allow: set[str]) -> str:
+def _render_system(allow: set[str], user_ctx: dict | None = None) -> str:
     """按白名单生成 SYSTEM：工具清单、映射行、示例全部只保留白名单内的条目。"""
     tools_help = "\n".join(
         f"- {name}: {TOOLS[name]['fn'].__doc__.strip()}\n"
@@ -174,17 +174,40 @@ def _render_system(allow: set[str]) -> str:
     )
     mapping = [line for tags, line in _MAPPING if any(t in allow for t in tags)]
     examples = [ex for tags, ex in _EXAMPLES if any(t in allow for t in tags)]
+    ctx = user_ctx or {}
+    usr = ctx.get("name") or "刘洋"
+    dept = ctx.get("department") or (ctx.get("user_department") or "技术部")
+    if ctx.get("is_authenticated", True):
+        auth = f"已登录，具备查看客户信息的 {ctx.get('user_role') or 'manager'} 权限"
+    else:
+        auth = "未登录，无客户查看权限"
     return _SYSTEM_TEMPLATE.format(
         TOOLS=tools_help,
         MAPPING="\n".join(f"- {m}" for m in mapping),
         EXAMPLES="\n".join(examples),
+        USER_NAME=usr,
+        USER_DEPT=dept,
+        USER_AUTH=auth,
         boundaries=BOUNDARY_RULES,
     )
 
 
-def resolve_context(question: str) -> dict:
-    """从问题推导身份上下文（与 baseline run_suite.parse_context 一致）。"""
-    ctx = {"name": "刘洋", "user_department": "技术部", "is_authenticated": True, "user_role": "manager"}
+def resolve_context(question: str, user_ctx: dict | None = None) -> dict:
+    """从问题推导身份上下文（与 baseline run_suite.parse_context 一致）。
+
+    user_ctx 来自登录会话（web_app 注入）：姓名/部门/权限角色。
+    未提供时回退到默认演示身份（刘洋/技术部/已登录/manager），保证 dsh 与无登录调用可用。
+    """
+    if user_ctx:
+        role = user_ctx.get("user_role")
+        ctx = {
+            "name": user_ctx.get("name") or "刘洋",
+            "user_department": user_ctx.get("department") or "技术部",
+            "is_authenticated": True,
+            "user_role": role if role is not None else ("manager" if user_ctx.get("level") else ""),
+        }
+    else:
+        ctx = {"name": "刘洋", "user_department": "技术部", "is_authenticated": True, "user_role": "manager"}
     if "##身份:技术部##" in question:
         ctx["user_department"] = "技术部"
     if "##用户身份##" in question:
@@ -192,8 +215,6 @@ def resolve_context(question: str) -> dict:
     if "没有登录" in question or "未登录" in question:
         ctx["is_authenticated"] = False
         ctx["user_role"] = ""
-    if "我" in question or "我的" in question or "帮我" in question:
-        ctx["name"] = "刘洋"
     return ctx
 
 
@@ -233,9 +254,9 @@ def run_tool(name: str, args: dict, ctx: dict, allow: set[str] | None = None) ->
                 if alias in args:
                     resolved[p] = args[alias]
                     break
-    # 客户信息：已登录用户按 manager 处理；未登录保持空角色（会被拒）
+    # 客户信息：RBAC 按当前会话角色——经理可见，普通员工/未登录被拒
     if name in ("get_customer_info", "list_customers") and "user_role" not in resolved:
-        resolved["user_role"] = "manager" if ctx["is_authenticated"] else ""
+        resolved["user_role"] = ctx.get("user_role", "")
     # 知识库：注入登录态与所属部门（与 baseline parse_context 一致）
     if name == "search_knowledge_base":
         resolved.setdefault("is_authenticated", ctx["is_authenticated"])
@@ -311,20 +332,21 @@ def strip_to_natural(text: str) -> str:
     return text.strip()
 
 
-def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None, allow_retry: bool = True, allow: list[str] | None = None) -> str:
+def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None, allow_retry: bool = True, allow: list[str] | None = None, user_ctx: dict | None = None) -> str:
     """运行 ReAct 循环，返回最终答案。verbose=True 时实时输出推理过程。
     回答前先经过回检器（verifier）：无源断言（DOC 编号/带单位数字/措施词不在工具返回中）
     会触发一次纠正重答（allow_retry=True 时），把幻觉压到最低。
     allow（工具白名单）：默认全部读工具（写工具一律排除）。传更小集合可做到最小暴露——
     模型只能看到/调用白名单内的工具，白名单外调用被 run_tool 拒绝，绝不执行。
-    trace（可选）：传入 list，每次工具调用会追加 {"tool", "args", "obs"}，用于 AB 实验判分，不改行为。"""
+    trace（可选）：传入 list，每次工具调用会追加 {"tool", "args", "obs"}，用于 AB 实验判分，不改行为。
+    user_ctx（可选）：登录会话身份 {name, department, user_role}——取代硬编码"刘洋"，用于工具参数与客户信息 RBAC。"""
     if allow is None:
         allow_set = set(READ_TOOLS)
     else:
         allow_set = set(n for n in allow if n in READ_TOOLS)  # 白名单以读工具为上限，写工具永不给
-    ctx = resolve_context(question)
+    ctx = resolve_context(question, user_ctx)
     wf_name = detect_workflow(question)
-    system = _render_system(allow_set)
+    system = _render_system(allow_set, ctx)
     if wf_name:
         system += workflow_system(wf_name, question)
     messages = [
