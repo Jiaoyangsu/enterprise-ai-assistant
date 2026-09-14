@@ -2,4 +2,5 @@
 *.log
 *.out
 __pycache__/
-.DS_Storetools/flywheel/feed.db
+.DS_Store
+tools/flywheel/feed.db
