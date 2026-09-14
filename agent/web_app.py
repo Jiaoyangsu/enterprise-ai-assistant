@@ -17,6 +17,16 @@ sys.path.insert(0, HERE)
 
 from react_agent import agent, classify_profile  # noqa: E402
 
+FEEDBACK = os.environ.get("WEB_FEEDBACK", "/tmp/web_feedback.jsonl")
+
+
+def log_feedback(rec: dict):
+    try:
+        with open(FEEDBACK, "a") as f:
+            f.write(json.dumps({**{"ts": time.time()}, **rec}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
 FROM_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
 FROM_HOST, FROM_PORT = FROM_BASE_URL.split("://")[1].split(":")[0], int(
     FROM_BASE_URL.split(":")[-1].split("/")[0] or 11434
@@ -151,8 +161,13 @@ class Handler(BaseHTTPRequestHandler):
                            "tools": [t["tool"] for t in trace],
                            "allow": allow,
                            "elapsed_s": round(time.time() - t0, 1)}
+                    log_feedback({"source": "web", "question": question,
+                                  "answer": ans, "tools": [t["tool"] for t in trace],
+                                  "elapsed_s": out["elapsed_s"], "status": 200})
                 except Exception as e:
                     status, out = 500, err_to_dict(str(e))
+                    log_feedback({"source": "web", "question": question, "status": 500,
+                                  "err": str(e)[:200]})
         body = json.dumps(out, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
