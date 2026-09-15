@@ -1,7 +1,13 @@
 # 变更日志
 
-> 规范：每次开发在 `dev` 分支提交并 push（每日同步）；验证稳定的改动合并到 `main` 并 push。
-> 同步记录对标 `git log --oneline`。
+> 规范：每次开发在本地 commit 并推送（每日同步）；默认直接在 `main` 快进。
+
+### 2026-09-14 · 登录/RBAC · 工作流扩展 · 飞轮闭环（未发版标记用提交号对齐）
+- `050de5c` feat(auth+workflow+rbac)：姓名+密码登录界面（cookie session，密码表 `auth_users.json`，默认 123456）；未登录强制 /login；身份注入 ReAct Agent 驱动客户信息 RBAC（经理可见/员工被拒）。
+- workflow 新增 5 类：出差申请/权限申请/证明开具/培训申请/审批查询（inquiry 优先匹配，防误触发申请表单）。
+- `53c7360` feat(workflow)：申请草稿/引导/审批查询**全部代码化**（`missing_fields` 判缺失、`build_draft` 生成草稿清单、inquiry 代码提示），不再依赖模型出草稿——确定性优先。含并发线程安全小修、刘洋角色一致化。
+- `c762bb6` + `5989113` feat(flywheel)：promote 闭环（人工标注 expected → 评测集 + benchmark.jsonl + promote_docs.md）+ bench/judge 判分器；生成物入库。
+- 文档：README 重写、新增 `docs/使用指南.md`、`docs/测试文档.md`。
 
 ### 新增第 8 组"文档综合推理"测试题（9 题，36→45）
 - 报销/请假/培训三主题 × {单点→跨制度→陷阱}，需跨多篇文档（如洛阳出差=DOC-102+DOC-105、试用期转正=DOC-101+DOC-111）。
