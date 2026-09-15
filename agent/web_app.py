@@ -109,6 +109,19 @@ def log_feedback(rec: dict):
         pass
 
 
+def _feed_trace(trace: list | None) -> list:
+    """把 ReAct 轨迹压缩成摘要落盘（供轨迹质量分析，控制体积）。"""
+    out = []
+    for t in trace or []:
+        args = {k: (str(v)[:60]) for k, v in (t.get("args") or {}).items()}
+        out.append({
+            "tool": t.get("tool") or "",
+            "args": args,
+            "obs": (t.get("obs") or "")[:200],
+        })
+    return out
+
+
 def _append_jsonl(path: str, rec: dict):
     with _human_lock:
         with open(path, "a") as f:
@@ -541,16 +554,19 @@ class Handler(BaseHTTPRequestHandler):
                         log_feedback({"source": "web", "user": usr.get("name") if usr else None,
                                       "question": question,
                                       "answer": ans, "tools": [t["tool"] for t in trace],
+                                      "trace": _feed_trace(trace),
                                       "elapsed_s": out["elapsed_s"], "status": 200})
                         queue_for_human(question, ans, "不确定性")
                     else:
                         log_feedback({"source": "web", "user": usr.get("name") if usr else None,
                                       "question": question,
                                       "answer": out["answer"], "tools": [],
+                                      "trace": _feed_trace(trace),
                                       "elapsed_s": out["elapsed_s"], "status": 200, "workflow": wf_name})
                 except Exception as e:
                     status, out = 500, err_to_dict(str(e))
                     log_feedback({"source": "web", "question": question, "status": 500,
+                                  "trace": _feed_trace(trace),
                                   "err": str(e)[:200]})
                     queue_for_human(question, "", "500")
         body = json.dumps(out, ensure_ascii=False).encode("utf-8")

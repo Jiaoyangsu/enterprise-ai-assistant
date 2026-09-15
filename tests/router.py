@@ -33,10 +33,21 @@ def route(question: str) -> str:
     triggers_write_leave = ["提交", "申请年假", "申请事假", "请假的申请"]
     if any(t in q for t in triggers_write_leave) and ("请假" in q or "年假" in q or "事假" in q):
         if any(t in q for t in ["月", "日", "-", "到"]):
-            return "create_leave_request"
+            return "blocked_write"
 
     if any(w in q for w in ["开单", "报障", "创建工单", "开个工单", "报个工单"]):
-        return "create_ticket"
+        return "blocked_write"
+
+    # ---- 规章制度 / 文档综合推理（跨制度咨询）：先于具体数据工具判断 ----
+    # 问入职/培训/转正/病假/审批等制度性问题时优先走知识库；
+    # 明确的数据查询（还剩几天/预算/客户信息/合同状态等）不走这里。
+    KB_LONG = ["培训", "入职", "转正", "试用", "报到", "账号", "测评", "结业", "病假", "材料",
+               "返岗", "工资怎么发", "能不能", "可不可以", "对不对", "作废", "延长", "最长",
+               "怎么走", "流程", "需要", "审批", "签", "差旅", "住宿", "报销"]
+    DATA_ONLY = ["HT-", "还剩", "余额", "预算", "剩多少", "客户信息", "在哪个部门",
+                 "哪些客户", "审批中", "审批到哪", "有多少", "花名册"]
+    if any(k in q for k in KB_LONG) and not any(k in q for k in DATA_ONLY):
+        return "search_knowledge_base"
 
     # 合同
     if "合同" in q or "HT-" in q:

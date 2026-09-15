@@ -292,7 +292,17 @@ def missing_fields(question: str, name: str) -> list[str]:
     return out
 
 
+# 咨询型疑问词：问制度/流程本身时不是"申请"，不触发工作流（交给知识库检索）
+_QUERY_HINT = (
+    "是什么", "怎么算", "多少", "上限", "标准", "规定", "制度", "要求", "需要几天",
+    "流程是", "流程吗", "怎么走", "怎么报", "怎么办", "要不要", "能不能", "有哪些",
+    "怎么样", "时长", "几天", "哪级", "谁审批", "何时", "如何", "补贴",
+)
+
+
 def detect_workflow(question: str) -> str | None:
+    if any(k in question for k in _QUERY_HINT):
+        return None
     q = question.lower()
     hits: list[dict] = []
     for w in WORKFLOWS:
