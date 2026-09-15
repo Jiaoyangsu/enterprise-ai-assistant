@@ -254,8 +254,9 @@ def run_tool(name: str, args: dict, ctx: dict, allow: set[str] | None = None) ->
                 if alias in args:
                     resolved[p] = args[alias]
                     break
-    # 客户信息：RBAC 按当前会话角色——经理可见，普通员工/未登录被拒
-    if name in ("get_customer_info", "list_customers") and "user_role" not in resolved:
+    # 客户信息：RBAC 无条件以当前会话角色为准——经理可见，普通员工/未登录被拒。
+    # 模型可能自行在 args 里写 user_role，这里强制覆盖，杜绝"自我晋升"绕过。
+    if name in ("get_customer_info", "list_customers"):
         resolved["user_role"] = ctx.get("user_role", "")
     # 知识库：注入登录态与所属部门（与 baseline parse_context 一致）
     if name == "search_knowledge_base":
