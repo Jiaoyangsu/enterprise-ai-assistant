@@ -58,8 +58,12 @@ def ensure_db():
         "CREATE TABLE IF NOT EXISTS cases("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "question TEXT UNIQUE, expected TEXT, source TEXT, category TEXT,"
-        "created REAL DEFAULT 0)"
+        "reason TEXT, created REAL DEFAULT 0)"
     )
+    try:
+        con.execute("ALTER TABLE cases ADD COLUMN reason TEXT")
+    except sqlite3.OperationalError:
+        pass
     con.commit()
     return con
 
@@ -158,38 +162,45 @@ def report():
     lines = [
         "# 数据飞轮候选清单（人工标注后回灌评测）",
         "",
-        "> 流程：人工在 `expected` 处补期望内容(可留空=跳过)；确认后跑 `promote` 转评测题。",
+        "> 流程：人工在 `expected` 处补期望内容(可留空=跳过)；`决策理由(reason)` 记录",
+        "> 该答案凭什么定（制度X条/人工约定/待人工），歧义样本务必写明；确认后跑 `promote` 转评测题。",
         "",
-        "| # | 来源 | 类别 | 问题 | 期望(expected) | 工具/拦截原因 | 次数 |",
-        "|---|------|------|------|----------------|--------------|-----:|",
+        "| # | 来源 | 类别 | 问题 | 期望(expected) | 工具/拦截原因 | 次数 | 决策理由(reason) |",
+        "|---|------|------|------|----------------|--------------|-----:|-----:|",
     ]
-    prev_exp = _last_expected()  # 保留上一版人工标注，避免 re-report 丢失
+    prev_exp, prev_reason = _last_markup()  # 保留上一版人工标注，避免 re-report 丢失
     for idx, (sid, source, cat, question, answer, issues, _tools, seen) in enumerate(cand, 1):
         q = question.replace("|", "/")
         short_i = (issues or "")[:90].replace("|", "/")
         expected = prev_exp.get(question, "")
+        reason = prev_reason.get(question, "")
         if not expected and cat == "human" and answer:
             expected = " ".join(answer.split())[:80]  # 人工已答即期望答案，promote 时自动录取
         lines.append(
-            f"| {idx} | {source} | {CATEGORY.get(cat, cat)} | {q} | {expected} | {short_i} | {seen} |"
+            f"| {idx} | {source} | {CATEGORY.get(cat, cat)} | {q} | {expected} | {short_i} | {seen} | {reason} |"
         )
     md = "\n".join(lines) + "\n"
     with open(CAND_MD, "w") as f:
         f.write(md)
-    print(f"候选清单已写入 {CAND_MD}（{len(cand)} 条，human 类别已自动预填 expected）")
+    print(f"候选清单已写入 {CAND_MD}（{len(cand)} 条，human 类别已自动预填 expected；可在表格末列补决策理由）")
     con.close()
 
 
-def _last_expected() -> dict:
-    """读上一版 candidates.md 中人工填写的 expected（question->expected）。"""
+def _last_markup() -> tuple[dict, dict]:
+    """读上一版 candidates.md 中人工填写的期望与决策理由（question -> (expected, reason)）。"""
     if not os.path.exists(CAND_MD):
-        return {}
-    out = {}
+        return {}, {}
+    expected, reason = {}, {}
     for line in open(CAND_MD, encoding="utf-8"):
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) >= 5 and cells[3]:
-            out[cells[3]] = cells[4] if cells[4] else ""
-    return out
+            q = cells[3]
+            exp = cells[4]
+            if exp:
+                expected[q] = exp
+            if len(cells) >= 8 and cells[7]:
+                reason[q] = cells[7]
+    return expected, reason
 
 
 def promote():
@@ -205,12 +216,12 @@ def promote():
         expected = cells[4]
         if not expected or expected.isspace():
             continue
-        rows.append((question, expected, cells[1]))
+        rows.append((question, expected, cells[1], cells[7] if len(cells) >= 8 else ""))
     if not rows:
         print("候选清单中没有已标注 expected 的样本。")
         return
     cases = []
-    for i, (question, expected, md_source) in enumerate(rows, 1):
+    for i, (question, expected, md_source, reason) in enumerate(rows, 1):
         row = con.execute(
             "SELECT id, source, category FROM samples WHERE question=? ORDER BY id DESC LIMIT 1",
             (question,),
@@ -219,13 +230,21 @@ def promote():
         cat = (row or (None, "", ""))[2]
         t = time.time()
         con.execute(
-            "INSERT OR IGNORE INTO cases(question, expected, source, category, created) VALUES(?,?,?,?,?)",
-            (question, expected, source, cat, t),
+            "INSERT OR IGNORE INTO cases(question, expected, source, category, reason, created) "
+            "VALUES(?,?,?,?,?,?)",
+            (question, expected, source, cat, reason, t),
+        )
+        # 已存在则补全 reason（历史正片常缺决策依据）
+        con.execute(
+            "UPDATE cases SET reason=? WHERE question=? AND reason IS NULL OR reason=''",
+            (reason, question),
         )
         if row:
             con.execute("UPDATE samples SET promoted=1 WHERE id=?", (row[0],))
-        print(f"[{i}] 评测题已收录: {question[:45]}  <- {CATEGORY.get(cat, md_source)}")
-        cases.append({"question": question, "expected": expected, "source": source, "category": cat})
+        print(f"[{i}] 评测题已收录: {question[:45]}  <- {CATEGORY.get(cat, md_source)}"
+              + (f" | 理由: {reason[:30]}" if reason else " | 理由: (未填)"))
+        cases.append({"question": question, "expected": expected, "source": source,
+                      "category": cat, "reason": reason})
     con.commit()
     with open(BENCH_JSON, "w") as f:
         for c in cases:
@@ -234,7 +253,10 @@ def promote():
         f.write("# 新知识条目草案（人工核对后落库到 documents_extra）\n\n")
         for c in cases:
             if c["category"] in ("human", "unanswered"):
-                f.write(f"- 问题：{c['question']}\n  回答(待核对)：{c['expected']}\n")
+                f.write(f"- 问题：{c['question']}\n")
+                f.write(f"  回答(待核对)：{c['expected']}\n")
+                if c.get("reason"):
+                    f.write(f"  决策理由：{c['reason']}\n")
     con.close()
     print(f"评测集已写入 {BENCH_JSON}（{len(cases)} 条）；知识条目标注见 {DOCS_MD}")
 
@@ -254,7 +276,36 @@ def judge(expected: str, ans: str) -> tuple[bool, str]:
     return ok, evidence
 
 
-def bench():
+def judge_llm(question: str, expected: str, ans: str) -> tuple[bool, str]:
+    """LLM-as-a-Judge：确定性 judge 失败后的语义复核。
+
+    若模型不可用（异常），返回 (False, reason="llm不可用") 并打印提示——调用方应保持原确定性结论。
+    """
+    sys.path.insert(0, os.path.join(HERE, "..", "agent"))
+    try:
+        from llm import chat_json
+    except ModuleNotFoundError:
+        return False, "agent依赖不可用"
+    prompt = (
+        "你是答案评审员。判断『待评审回答』与『标准答案』是否语义一致"
+        "（允许不同措辞；关键点缺失或意思相反=不一致）。\n"
+        "注意：标准答案若列明分档/多条要点（如数字档位、并列条款），待评审回答应覆盖主要要点，"
+        "只答其中一部分、遗漏其他要点即视为不一致。\n"
+        f"问题：{question}\n"
+        f"标准答案：{expected}\n"
+        f"待评审回答：{ans[:600]}\n"
+        "只输出 JSON：{\"pass\": true/false, \"reason\": \"一句话理由\"}"
+    )
+    try:
+        r = chat_json("qwen2.5:14b", [{"role": "user", "content": prompt}], temperature=0.0)
+        ok = bool(r.get("pass"))
+        return ok, ("llm判定" + ("通过" if ok else "不通过") + ": " + str(r.get("reason", ""))[:40])
+    except Exception as e:
+        print(f"  (judge_llm 不可用: {e})")
+        return False, "llm不可用"
+
+
+def bench(judge_with_llm: bool = False):
     if not os.path.exists(BENCH_JSON):
         print("尚无评测集，先跑 promote。")
         return
@@ -266,6 +317,7 @@ def bench():
         return
     cases = [json.loads(l) for l in open(BENCH_JSON, encoding="utf-8")]
     ok_cnt = 0
+    relabelled = 0
     for i, c in enumerate(cases, 1):
         try:
             ans = agent(c["question"])
@@ -273,19 +325,37 @@ def bench():
             print(f"[{i}] {c['question'][:40]}  -> FAIL(异常 {e})")
             continue
         ok, ev = judge(c["expected"], ans)
+        tag = ""
+        if not ok and judge_with_llm:
+            ok2, ev2 = judge_llm(c["question"], c["expected"], ans)
+            if ok2:
+                relabelled += 1
+                ok, ev, tag = True, "llm语义复核通过(" + ev2.split(":")[-1][:20] + ")", " [语义复核纠正]"
+            elif "不可用" in ev2:
+                print(f"  (bench 降级：LLM judge 不可用，{c['question'][:36]} 维持确定性 FAIL)")
+            else:
+                ev = "确定性" + ev + "；llm亦否(" + ev2.split(":")[-1][:20] + ")"
         ok_cnt += ok
-        print(f"[{i}] {'PASS' if ok else 'FAIL'} {c['question'][:38]} | {ev}")
-    print(f"== bench {ok_cnt}/{len(cases)} ==")
+        print(f"[{i}] {'PASS' if ok else 'FAIL'}{tag} {c['question'][:38]} | {ev}")
+    print(f"== bench {ok_cnt}/{len(cases)}"
+          + (f"（含 LLM 语义复核纠正 {relabelled} 条）" if judge_with_llm else "") + " ==")
 
 
 def main():
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "report"
+    args = [a for a in sys.argv[1:]]
+    judge_with_llm = False
+    if "--judge" in args:
+        i = args.index("--judge")
+        if i + 1 < len(args) and args[i + 1] == "llm":
+            judge_with_llm = True
+        args = args[:i] + args[i + 2:]
+    cmd = args[0] if args else "report"
     if cmd == "ingest":
         ingest()
     elif cmd == "promote":
         promote()
     elif cmd == "bench":
-        bench()
+        bench(judge_with_llm=judge_with_llm)
     else:
         report()
 
