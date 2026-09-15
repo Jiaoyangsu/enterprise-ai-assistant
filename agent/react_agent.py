@@ -24,6 +24,26 @@ from workflow import detect_workflow, workflow_system  # noqa: E402
 
 MAX_STEPS = 6
 
+MAX_HISTORY_TURNS = 8  # 多轮对话最多带入的历史问答对（防爆 token / 防长文本注入）
+
+
+def _fmt_history(history: list | None) -> list[dict]:
+    """把多轮历史 [{q, a}] 转成 messages 中 system 之后的 user/assistant 轮次。
+
+    策略：截断单条长度 + 只保留最近 MAX_HISTORY_TURNS 轮，历史中不含工具观测
+    （工具轨迹由本轮 re-act 自取，避免把旧观测注入误导新推理）。"""
+    msgs: list[dict] = []
+    for item in (history or [])[-MAX_HISTORY_TURNS:]:
+        if not isinstance(item, dict):
+            continue
+        q = (str(item.get("q") or "")).strip()[:600]
+        a = (str(item.get("a") or "")).strip()[:1200]
+        if q:
+            msgs.append({"role": "user", "content": q})
+        if a:
+            msgs.append({"role": "assistant", "content": a})
+    return msgs
+
 # 工具注册表：真实业务函数
 import ops_server as _ops
 import docs_server as _docs
@@ -333,14 +353,16 @@ def strip_to_natural(text: str) -> str:
     return text.strip()
 
 
-def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None, allow_retry: bool = True, allow: list[str] | None = None, user_ctx: dict | None = None) -> str:
+def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None, allow_retry: bool = True, allow: list[str] | None = None, user_ctx: dict | None = None, history: list | None = None) -> str:
     """运行 ReAct 循环，返回最终答案。verbose=True 时实时输出推理过程。
     回答前先经过回检器（verifier）：无源断言（DOC 编号/带单位数字/措施词不在工具返回中）
     会触发一次纠正重答（allow_retry=True 时），把幻觉压到最低。
     allow（工具白名单）：默认全部读工具（写工具一律排除）。传更小集合可做到最小暴露——
     模型只能看到/调用白名单内的工具，白名单外调用被 run_tool 拒绝，绝不执行。
     trace（可选）：传入 list，每次工具调用会追加 {"tool", "args", "obs"}，用于 AB 实验判分，不改行为。
-    user_ctx（可选）：登录会话身份 {name, department, user_role}——取代硬编码"刘洋"，用于工具参数与客户信息 RBAC。"""
+    user_ctx（可选）：登录会话身份 {name, department, user_role}——取代硬编码"刘洋"，用于工具参数与客户信息 RBAC。
+    history（可选）：多轮对话历史 [{q, a}, ...]，作为本轮之前的 user/assistant 上下文拼进 messages
+    （支持"张三在哪个部门 → 那个部门多少人"类指代；限制最近 8 轮 + 单条截断）。"""
     if allow is None:
         allow_set = set(READ_TOOLS)
     else:
@@ -350,10 +372,9 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
     system = _render_system(allow_set, ctx)
     if wf_name:
         system += workflow_system(wf_name, question)
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": question},
-    ]
+    messages = [{"role": "system", "content": system}]
+    messages += _fmt_history(history)
+    messages.append({"role": "user", "content": question})
 
     def deliver(ans: str) -> str | None:
         """回检通过才交付；被拦截且还有重试机会时返回 None 触发下一轮重答。"""

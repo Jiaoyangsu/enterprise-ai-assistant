@@ -275,17 +275,19 @@ function add(role, text, tag){
   d.appendChild(b); box.appendChild(d); box.scrollTop=box.scrollHeight;
   if(tag){const t=document.createElement('div'); t.className='tag'; t.textContent=tag; d.appendChild(t);}
 }
+let turns=[];
 async function send(){
   const val=q.value.trim(); if(!val) return;
   add('u', val); q.value=''; go.disabled=true;
   add('a', '…思考中'); // 占位
   const t0=performance.now();
   try{
-    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:val})});
+    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:val,history:turns.map(t=>({q:t.q,a:t.a}))})});
     const d=await r.json();
     box.lastElementChild.remove();
     const tools=Array.isArray(d.tools)&&d.tools.length? (' · 工具: '+d.tools.join(' → ')) : ' · 未调用工具';
     add('a', d.answer, '用时 '+(d.elapsed_s||0).toFixed(1)+'s · 模型 '+(d.model||'14b')+tools);
+    turns.push({q:val,a:d.answer||''}); if(turns.length>20) turns.shift();
   }catch(e){ box.lastElementChild.remove(); add('a','请求失败: '+e); }
   go.disabled=false; q.focus();
 }
@@ -501,6 +503,10 @@ class Handler(BaseHTTPRequestHandler):
         if path != "/api/chat":
             self.send_response(404); self.end_headers(); return
         question = (data.get("question") or "").strip()
+        hist_raw = data.get("history") or []
+        history = ([{"q": str(h.get("q", ""))[:600], "a": str(h.get("a", ""))[:1200]}
+                    for h in hist_raw if isinstance(h, dict)][-16:]
+                   if isinstance(hist_raw, list) else [])
         usr = session_user(tok)
         status, out = 200, err_to_dict("问题不能为空")
         if question:
@@ -546,7 +552,7 @@ class Handler(BaseHTTPRequestHandler):
                                        "model": "web/workflow-draft", "tools": [], "allow": allow,
                                        "elapsed_s": round(time.time() - t0, 1), "workflow": wf_name}
                     if not guided:
-                        ans = agent(question, model="qwen2.5:14b", trace=trace, allow=allow, user_ctx=usr)
+                        ans = agent(question, model="qwen2.5:14b", trace=trace, allow=allow, user_ctx=usr, history=history)
                         out = {"answer": ans, "model": "qwen2.5:14b",
                                "tools": [t["tool"] for t in trace],
                                "allow": allow,
