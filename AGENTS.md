@@ -20,7 +20,8 @@
 - **跨机访问 dsh 8787**：dsh 明确禁止 `--host 0.0.0.0`（会暴露 RCE），只能本机绑定；他机测试用 SSH 隧道 `ssh -L 8787:127.0.0.1:8787 <user>@<Mac IP>` 再开 token 链接（token 取自 `/tmp/dsh-web.log`，每次重启变化）。跨机直连/反代场景需把权威名加入 `--trusted-host`，否则 `/api` 被 browser-trust fence 拦。
 - **自研 8788 跨机**：`WEB_HOST=0.0.0.0 .venv/bin/python agent/web_app.py 8788`（默认仍绑 `127.0.0.1`，登录 fail-closed）。
 - guard 语法/单测：`node --check ~/.dsh/profiles/web/node_modules/guard/index.js && node ~/.dsh/profiles/web/node_modules/guard/test.js`
-- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）、`tests/test_baseline.py`（22）、`tests/test_golden.py`（16）、`tests/test_entities.py`（18）、`tests/test_store.py`（20）、`tests/test_retrieval.py`（13）
+- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）、`tests/test_baseline.py`（22）、`tests/test_golden.py`（16）、`tests/test_context.py`（13）、`tests/test_entities.py`（18）、`tests/test_store.py`（20）、`tests/test_retrieval.py`（16）、`tests/test_web_page.py`（内嵌 JS 语法 3）
+- **页面内嵌 JS 陷阱**：`agent/web_app.py` 的三引号页面字符串里写 JS 的 `\n` 会被 Python 解释成真实换行、截断 JS 字符串 → 整段脚本 SyntaxError、按钮点了没反应。`tests/test_web_page.py` 用 `node --check` 兜这个；写页面 JS 时换行用空格或改 `\\n`。
 - 检索索引：`ollama pull bge-m3`（一次性；离线可跳过，检索自动回退关键词）
 - 账号口令管理：`.venv/bin/python tools/set_password.py <姓名> '<口令>'`（或 `--list` / `--remove`）；账号表 `data/auth_users.json`（fail-closed，无通配/默认口令），生产用 `AUTH_USERS` 环境变量注入
 - Connector 生产化（`mcp_servers/connector.py`）：`CONNECTOR_CLIENT_SECRET` 启用 Bearer 鉴权，`CONNECTOR_TLS_CERT`/`CONNECTOR_TLS_KEY` 启用 HTTPS；未设置 secret 时为本地 dev（127.0.0.1 不鉴权）

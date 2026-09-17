@@ -450,7 +450,7 @@ async function send(){
   } else {
     const name=(err&&err.name)||'';
     const tip=name==='AbortError'? '请求超时（后端仍在处理或服务未运行）': String(err);
-    add('a','请求失败: '+tip+'\n请确认服务在运行（/api/health 返回 ok）后重试。');
+    add('a','请求失败: '+tip+'。请确认服务在运行（/api/health 返回 ok）后重试。');
   }
   go.disabled=false; q.focus();
 }
