@@ -3,20 +3,42 @@
 - 写入路径：/tmp/audit.jsonl（可用 AUDIT_FILE 环境变量覆盖）
 - 每条：{ts, user, department, role, tool, args, result_summary, sensitive}
 - 不写完整观测正文（体积与隐私兼得），只保留 ≤200 字的敏感摘要
+- **日志脱敏**：args 与 result 写入前统一走 security_server.redact_pii（手机/身份证/
+  邮箱/银行卡/地址/内部人名），避免用户把待脱敏的 PII 作为参数传入时反被明文落盘
 - 写失败静默（审计日志绝不影响主流程）
 """
 import json
 import os
+import sys
 import time
 
 AUDIT_FILE = os.environ.get("AUDIT_FILE", "/tmp/audit.jsonl")
+
+# 脱敏复用 MCP security_server 的单一 PII 实现（含邮箱/银行卡/地址/内部人名，比 injection.mask_pii 更全）
+_MCP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mcp_servers")
+if _MCP_DIR not in sys.path:
+    sys.path.insert(0, _MCP_DIR)
+try:
+    from security_server import redact_pii as _redact_pii  # noqa: E402
+except Exception:  # pragma: no cover - 无 fastmcp 时降级为仅截断
+    _redact_pii = None
 
 # 涉及敏感/机密数据访问的工具：这些操作的结果摘要含密级提示
 _SENSITIVE_TOOLS = {"get_customer_info", "list_customers", "query_contract", "lookup_employee"}
 
 
+def _scrub(text: str) -> str:
+    """PII 脱敏（失败即原样返回，审计绝不因脱敏异常而中断）。"""
+    if not text or _redact_pii is None:
+        return text
+    try:
+        return _redact_pii(text)["redacted"]
+    except Exception:  # pragma: no cover
+        return text
+
+
 def _summary(obs: str, max_chars: int = 200) -> str:
-    s = (obs or "").strip().replace("\n", " ")
+    s = _scrub((obs or "").strip().replace("\n", " "))
     return s[:max_chars]
 
 
@@ -39,7 +61,7 @@ def audit_tool_call(user: dict | None, tool: str, args: dict, obs: str) -> None:
         "department": u["department"],
         "role": u["user_role"],
         "tool": tool,
-        "args": {k: str(v)[:80] for k, v in (args or {}).items()},
+        "args": {k: _scrub(str(v))[:80] for k, v in (args or {}).items()},
         "sensitive": tool in _SENSITIVE_TOOLS,
         "shared": False,
         "result": _summary(obs),
@@ -62,7 +84,7 @@ def audit_share(user: dict | None, tool: str, args: dict, obs: str, reason: str 
         "department": (user or {}).get("department") or "",
         "role": (user or {}).get("user_role") or "",
         "tool": tool,
-        "args": {k: str(v)[:80] for k, v in (args or {}).items()},
+        "args": {k: _scrub(str(v))[:80] for k, v in (args or {}).items()},
         "sensitive": True,
         "shared": True,
         "reason": reason,

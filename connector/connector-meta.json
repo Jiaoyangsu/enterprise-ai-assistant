@@ -1,0 +1,25 @@
+{
+  "name": "Enterprise Knowledge Assistant",
+  "name_zh": "企业知识助手",
+  "name_en": "Enterprise Knowledge Assistant",
+  "description": "Search enterprise policies and knowledge, look up employees, budgets, departments and contracts, and redact personal information. Read-only and least-privilege by default.",
+  "description_zh": "检索企业制度与知识库，查询员工、预算、部门与合同信息，并对个人信息脱敏；默认只读、最小权限。",
+  "description_en": "Search enterprise policies and knowledge, look up employees, budgets, departments and contracts, and redact personal information. Read-only and least-privilege by default.",
+  "source": "enterprise-knowledge-assistant",
+  "type": "mcp",
+  "version": "1.0.0",
+  "minWorkbuddyVersion": "4.24.0",
+  "auth_mode": "token",
+  "examples_zh": [
+    "公司的年假制度是怎么规定的？",
+    "技术中心还剩多少部门预算？",
+    "员工韩梅梅的部门、职位和年假余额是多少？",
+    "把这段文字里的手机号和身份证号做脱敏"
+  ],
+  "examples_en": [
+    "What is the company's annual leave policy?",
+    "How much department budget does the tech center have left?",
+    "What are Han Meimei's department, title and annual leave balance?",
+    "Redact the phone number and ID card in this text"
+  ]
+}

@@ -40,4 +40,16 @@
 - **认证 fail-closed**：`agent/secure_auth.py` 集中口令校验（PBKDF2-HMAC-SHA256）；账号表无 `*` 通配、无隐式默认口令，未登记账号一律拒绝。生产用 `AUTH_USERS` 环境变量注入，口令/证书永不入库（`.gitignore` 覆盖 `data/auth_users.json`、`.env`、`*.pem`、`*.key`）。
 - **连接器生产化**：`mcp_servers/connector.py` 统一启动，`CONNECTOR_CLIENT_SECRET` → Bearer 鉴权，`CONNECTOR_TLS_CERT/KEY` → HTTPS；满足平台「HTTPS + streamableHttp + client_secret + 单次<30s」。
 - **PII 脱敏**：`security_server.redact_pii` 覆盖手机/身份证/邮箱/银行卡/地址/内部人名，敏感词表与内部人名表均由 `data/config.json` 配置。
+- **日志脱敏**：`agent/audit.py` 的 `args`/`result` 写入前复用 `security_server.redact_pii`（`_scrub`，失败降级为仅截断）；防止用户把待脱敏 PII 作为参数传入时反被明文落盘。
+- **合规材料**：`docs/合规与数据说明.md`（数据驻留 / 日志与审计 / 隐私政策占位 / 凭证处理）、`docs/上架类目与资质.md`（类目选择 + 资质与提交材料清单）。改动数据/日志/鉴权行为须同步这两份文档。
 - **LICENSE**：Apache-2.0（无协议不能上架）。
+
+## WorkBuddy 连接器提交包（`connector/`）
+
+- **一个连接器只能绑一个 MCP Server**（平台硬约束）。因此新增 `mcp_servers/aggregate_server.py`：用 `FastMCP.mount`（`namespace=None` 保留原名）把 docs/ops/security 合并为单端点 **8000**，对外 12 个工具。改子 server 即聚合端点同步生效。
+- 提交包结构：`connector/{connector-meta.json, mcp.json, token-schema.json, icon.svg, skills/<name>/SKILL.md, README.md}`。
+- **`minWorkbuddyVersion` 取所用特性最高版本**：`disabledTools`=4.22.15、`auth_mode: token`+token-schema=4.23.0、`name_zh/en`+`examples_zh/en`=**4.24.0** → 声明 `"4.24.0"`（易错点：不要只写 4.23.0）。
+- **对外只读**：`mcp.json` 的 `disabledTools` 隐藏 `create_leave_request`/`create_ticket`（写操作未持久化）与 `get_customer_info`/`list_customers`（权限依赖模型传入的 `user_role`，Token 模式不可信）。
+- **鉴权**：`auth_mode: token`，`${MCP_TOKEN}`（mcp.json）↔ `token-schema.json` 的 `fields[].key` 大小写必须一致；服务端 `CONNECTOR_CLIENT_SECRET` 对应此令牌。
+- 本地联调：`cd mcp_servers && CONNECTOR_CLIENT_SECRET=... ../.venv/bin/python aggregate_server.py`；校验 `curl -o /dev/null -w '%{http_code}' 127.0.0.1:8000/mcp`（无 token 应 401）。
+- 提交阻塞项见 `connector/README.md`：公网 HTTPS 域名、`SKILL.md` 的 `category` 白名单核对、令牌签发流程。
