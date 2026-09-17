@@ -20,6 +20,7 @@ tools/flywheel.py ── 数据飞轮(采集→分类→候选→promote→bench
 | Docs Server（知识库检索） | 8001 | `mcp_servers/docs_server.py` |
 | Ops Server（员工/预算/客户/合同） | 8002 | `mcp_servers/ops_server.py` |
 | Security Server（脱敏/风险检查） | 8003 | `mcp_servers/security_server.py` |
+| Memory Server（实体记忆/指代消解） | 8004 | `mcp_servers/memory_server.py` |
 | dsh Web（框架前端） | 8787 | dsh 框架 |
 | 自建前端（登录/RBAC/坐席） | 8788 | `agent/web_app.py` |
 | 本地 LLM（ollama qwen2.5:14b） | 11434 | 切换脚本 `tools/switch_backend.sh` |
@@ -27,7 +28,7 @@ tools/flywheel.py ── 数据飞轮(采集→分类→候选→promote→bench
 ## 快速启动
 
 ```bash
-# 1. 启动 3 个业务 MCP Server（依赖 fastmcp，见 .venv）
+# 1. 启动 4 个业务 MCP Server（依赖 fastmcp，见 .venv）
 ./start_all.sh
 
 # 2. 启动自建前端（登录 + RBAC + 人工兜底坐席）
@@ -42,6 +43,7 @@ tools/flywheel.py ── 数据飞轮(采集→分类→候选→promote→bench
 ## 能力总览
 
 - **多轮问答**：会话历史跨轮带入（支持"孙敏在哪个部门"→"这个部门多少人"的指代续问）；ReAct 循环调用真实 MCP 工具取证，绝不编数据；`verifier` 回检器在交付前审查无源断言，有幻觉兜底重答一次。
+- **实体记忆 + 指代消解**：`mcp_servers/entity_store.py` 把员工/部门/客户/合同建成实体索引（客户/合同受 RBAC）；`memory_server.py`（8004）提供 `resolve_entity`/`extract_entities`，代词（他/那家客户/这个部门/那份合同）按"上下文最后出现的同类型实体"定焦点解析成规范名；自研侧还会把"本会话已识别实体 + 指代映射"确定性注入 SYSTEM。学到的别名/新实体落 `data/entities.json`。
 - **登录与 RBAC**：`web_app.py` 姓名+密码登录（cookie session）；身份注入 Agent → 客户信息按角色授限（经理可见 / 普通员工被拒）。
 - **流程工作流（workflow.py，9 类）**：报销 / 请假 / 加班 / 资产申领 / 出差 / 权限申请 / 证明开具 / 培训申请 / 审批查询。
   - 缺字段 → 引导补齐；字段齐 → 代码直接生成可提交草稿清单；审批查询 → 告知到 OA「我的申请」查看，不编造审批节点。
@@ -56,11 +58,11 @@ tools/flywheel.py ── 数据飞轮(采集→分类→候选→promote→bench
 - RBAC 权限策略：`data/policy.json`（客户可见角色/文档密级/坐席角色，唯一权限声明点）
 - LLM 后端切换：`tools/switch_backend.sh local|autodl`
 - Persona / dsh 配置：`~/.dsh/.agent-presets/enterprise/agent.cordis.yml`（规则 4/10/11 流程引导）
-- Guard 拦截规则三分同步：`/opt/homebrew/lib/node_modules/guard/index.js` ↔ `~/.dsh/profiles/web/node_modules/guard/` ↔ `profiles/guard/index.js`
+- Guard 拦截规则两侧同步（dsh 实际加载 `node_modules` 那份，repo 仅存副本）：`~/.dsh/profiles/web/node_modules/guard/` ↔ `profiles/guard/`（`index.js`/`test.js`/`package.json`）；改完跑 `node profiles/guard/test.js` 并重启 dsh
 
 ## 上架 Connector（生产化）
 
-三个 MCP Server 已是 streamable-http，满足 WorkBuddy 连接器接入方式；生产化开关见 `mcp_servers/connector.py`：
+各 MCP Server 已是 streamable-http，满足 WorkBuddy 连接器接入方式；生产化开关见 `mcp_servers/connector.py`：
 
 - `CONNECTOR_CLIENT_SECRET`：设置后所有请求必须携带 `Authorization: Bearer <secret>`（client_secret 鉴权）；未设置=本地开发（仅监听 `127.0.0.1`，不鉴权）。
 - `CONNECTOR_TLS_CERT` / `CONNECTOR_TLS_KEY`：同时设置则启用 HTTPS。

@@ -32,6 +32,7 @@ MCP_PORTS = [
     ("docs", 8001),
     ("ops", 8002),
     ("security", 8003),
+    ("memory", 8004),
 ]
 
 MODEL = "qwen2.5:14b"

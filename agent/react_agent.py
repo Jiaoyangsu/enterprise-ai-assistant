@@ -81,6 +81,8 @@ def _summarize_history(older: list[dict]) -> str:
 import ops_server as _ops
 import docs_server as _docs
 import security_server as _sec
+import memory_server as _mem
+import entity_store as _ent
 
 TOOLS = {
     "lookup_employee": {"fn": _ops.lookup_employee, "args": {"name": "str"}},
@@ -93,6 +95,7 @@ TOOLS = {
     "redact_pii": {"fn": _sec.redact_pii, "args": {"text": "str(仅需脱敏的原文，不含指令词)"}},
     "risk_review_text": {"fn": _sec.risk_review_text, "args": {"text": "str"}},
     "sanitize_for_storage": {"fn": _sec.sanitize_for_storage, "args": {"text": "str", "keep_internal": "bool(可选)"}},
+    "resolve_entity": {"fn": _mem.resolve_entity, "args": {"mention": "str", "type_hint": "str(可选:employee/department/customer/contract)"}},
 }
 
 # 写类工具（改变外部状态的破坏性操作）被白名单机制永远排除：模型看不到、run_tool 拒绝执行。
@@ -116,6 +119,8 @@ _HR_HINT = re.compile(r"员工|部门|组织|考勤|年假|请假|加班|调休|
 _SEC_HINT = re.compile(r"脱敏|PII|敏感词|风险检查|存储|sanitize|redact|个人信息|隐私")
 _KB_HINT = re.compile(r"制度|流程|指南|规定|操作规范|手册|标准|费用|报销|差旅|补贴|补助|住宿|用餐|发票|单据|处罚|违规|文档|新员工|培训|测评|试用期|转正|社保|公积金|工伤|医疗|离职|入职|考勤|请假")
 
+_COREF = {"resolve_entity"}
+
 
 def classify_profile(question: str) -> list[str]:
     """按问题意图返回最小工具白名单。命中多个意图则合并；都无法判定时给全部读工具兜底。"""
@@ -130,6 +135,8 @@ def classify_profile(question: str) -> list[str]:
         allow |= _HR
     if _KB_HINT.search(question):
         allow |= _KB
+    if _ent.find_pronouns(question):
+        allow |= _COREF
     if not allow:
         allow = set(READ_TOOLS)
     allow |= _KB  # 制度检索作为通用兜底，避免分类漏配导致无工具可用
@@ -149,6 +156,7 @@ _MAPPING: list[tuple[tuple, str]] = [
     (("redact_pii",), "手机号/身份证脱敏 → redact_pii"),
     (("risk_review_text",), "敏感词风险检查 → risk_review_text"),
     (("sanitize_for_storage",), "脱敏+风险检查两步（内容涉及'脱敏/敏感词'时优先） → sanitize_for_storage"),
+    (("resolve_entity",), "指代词（他/她/那家客户/这个部门/那份合同）解析成规范实体 → resolve_entity"),
 ]
 
 _EXAMPLES: list[tuple[tuple, str]] = [
@@ -176,6 +184,9 @@ _EXAMPLES: list[tuple[tuple, str]] = [
     (("sanitize_for_storage",),
      "用户：把这段个人信息脱敏，再检查是否有敏感词：电话13800001111，讨论薪资倒挂\n"
      '→ {"thought": "脱敏+风险检查两步都是它，一步完成", "tool": "sanitize_for_storage", "args": {"text": "电话13800001111，讨论薪资倒挂"}}'),
+    (("resolve_entity",),
+     "（上一轮：张伟在哪个部门？）用户：他年假还剩几天？\n"
+     '→ {"thought": "「他」指上一轮提到的员工张伟", "tool": "resolve_entity", "args": {"mention": "他"}}'),
 ]
 
 _SYSTEM_TEMPLATE = """你是企业知识库 AI 助手。你通过调用工具获取真实数据来回答问题，绝不可编造数据。
@@ -214,6 +225,12 @@ _SYSTEM_TEMPLATE = """你是企业知识库 AI 助手。你通过调用工具获
 - 长文档只回答与用户问题最直接相关的那一条条文：先看问题问什么（天数/金额/条件/流程），再在返回原文里找**命中该意图的那句话**作依据，不要引用旁支条文，不要罗列整篇内容。
 - 禁止用"通常/大概/可能/一般/建议咨询"等模糊词替代确定数字；返回中没有的数字就说"制度中未写明"。
 - 返回文本里没有的措施（如{measure_words}等）一律不得出现在回答中，宁缺毋滥。
+
+8. 指代消解（有实体上下文时）：
+- 若问题含代词/指代（他/她/它/他们/该员工/那家客户/这个部门/那份合同等），先看下方
+  「本会话已识别实体」与「指代映射」，直接把规范名填进工具参数（如 name="张伟"、department="技术部"），
+  不要把"他/那个部门"原样传给工具。
+- 指代映射没有覆盖、仍不确定指谁时，先调 resolve_entity 拿到规范实体再调业务工具；仍无法确定就反问用户。
 
 {boundaries}
 """
@@ -273,6 +290,54 @@ def resolve_context(question: str, user_ctx: dict | None = None) -> dict:
     return ctx
 
 
+_ENTITY_TYPE_LABEL = {"employee": "员工", "department": "部门", "customer": "客户", "contract": "合同"}
+
+
+def _recent_questions(history: list | None, limit: int = 8) -> list[str]:
+    qs = [str(h.get("q") or "") for h in (history or []) if isinstance(h, dict)]
+    return [q for q in qs if q.strip()][-limit:]
+
+
+def entity_context_block(history: list | None, question: str, ctx: dict) -> str:
+    """生成「本会话已识别实体 + 指代映射」提示块，供 SYSTEM 注入（确定性、不额外调模型）。
+
+    实体来自 entity_store（与 memory_server 同一实现），已按当前会话 RBAC 过滤：
+    客户/合同实体仅管理层可见，员工/部门实体需已登录。"""
+    hist = " ".join(_recent_questions(history))
+    scope = (hist + " " + (question or "")).strip()
+    if not scope:
+        return ""
+    ia = ctx.get("is_authenticated", True)
+    role = ctx.get("user_role", "")
+    order: list[dict] = []
+    seen: set[str] = set()
+    for h in _ent.extract_entities(scope, is_authenticated=ia, user_role=role):
+        if h["id"] not in seen:
+            seen.add(h["id"])
+            order.append(h)
+
+    maps: list[str] = []
+    for p in _ent.find_pronouns(question or ""):
+        r = _ent.resolve_entity(p["mention"], context_text=scope, type_hint=p["type"],
+                                is_authenticated=ia, user_role=role)
+        if r["resolved"] and r["entity"]:
+            t = r["entity"]["type"]
+            maps.append(f"「{p['mention']}」→ {r['entity']['name']}（{_ENTITY_TYPE_LABEL.get(t, t)}）")
+    if not order and not maps:
+        return ""
+
+    lines = ["【本会话已识别实体（用于指代消解，工具参数一律用规范名）】"]
+    groups: dict[str, list[str]] = {}
+    for h in order:
+        groups.setdefault(h["type"], []).append(h["name"])
+    for t, names in groups.items():
+        uniq = list(dict.fromkeys(names))[:12]
+        lines.append(f"- {_ENTITY_TYPE_LABEL.get(t, t)}：" + "、".join(uniq))
+    if maps:
+        lines.append("- 指代映射：" + "；".join(maps))
+    return "\n".join(lines)
+
+
 def run_tool(name: str, args: dict, ctx: dict, allow: set[str] | None = None) -> str:
     """调用工具并返回观测字符串。先验白名单：白名单外的工具一律拒绝，绝不执行。"""
     if allow is not None and name not in allow:
@@ -317,6 +382,11 @@ def run_tool(name: str, args: dict, ctx: dict, allow: set[str] | None = None) ->
     if name == "search_knowledge_base":
         resolved.setdefault("is_authenticated", ctx["is_authenticated"])
         resolved.setdefault("user_department", ctx["user_department"])
+    # 实体记忆/指代消解：用户身份与上下文一律以服务端会话为准，模型只需给 mention
+    if name == "resolve_entity":
+        resolved.setdefault("user_role", ctx.get("user_role", ""))
+        resolved.setdefault("is_authenticated", ctx.get("is_authenticated", True))
+        resolved.setdefault("context_text", ctx.get("_coref_context", ""))
     # 员工查询/请假：占位姓名替换为当前用户
     if name in ("lookup_employee", "create_leave_request"):
         nm = resolved.get("name", "")
@@ -409,6 +479,7 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
     else:
         allow_set = set(n for n in allow if n in READ_TOOLS)  # 白名单以读工具为上限，写工具永不给
     ctx = resolve_context(question, user_ctx)
+    ctx["_coref_context"] = " ".join(_recent_questions(history))
     wf_name = detect_workflow(question)
 
     # 入口防线：用户问题/历史包含注入模式 → 直接拒绝，不进 ReAct 循环
@@ -427,6 +498,9 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
     system = _render_system(allow_set, ctx)
     if wf_name:
         system += workflow_system(wf_name, question)
+    ent_block = entity_context_block(history, question, ctx)
+    if ent_block:
+        system += "\n\n" + ent_block
     messages = [{"role": "system", "content": system}]
     messages += _fmt_history(history)
     messages.append({"role": "user", "content": question})

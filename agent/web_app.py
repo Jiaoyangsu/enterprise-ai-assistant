@@ -318,7 +318,7 @@ FROM_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
 FROM_HOST, FROM_PORT = FROM_BASE_URL.split("://")[1].split(":")[0], int(
     FROM_BASE_URL.split(":")[-1].split("/")[0] or 11434
 )
-MCP_PROBES = [("docs", 8001), ("ops", 8002), ("security", 8003)]
+MCP_PROBES = [("docs", 8001), ("ops", 8002), ("security", 8003), ("memory", 8004)]
 
 
 def healthcheck(timeout: float = 2.5) -> tuple:

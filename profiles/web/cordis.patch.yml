@@ -1,5 +1,4 @@
-# web layer: 挂载企业 3 个 MCP Server（streamable HTTP）
-# 注：transport 字段必须显式写 streamable-http，否则 dsh-mcp-client 不建立连接、工具不注册。
+# web layer: 挂载企业 4 个 MCP Server（streamable HTTP）
 - insert:
   - id: mcp-docs
     name: '@deepseek-ai/dsh-mcp-client'
@@ -19,3 +18,28 @@
       serverName: security
       transport: streamable-http
       url: http://127.0.0.1:8003/mcp
+  - id: mcp-memory
+    name: '@deepseek-ai/dsh-mcp-client'
+    config:
+      serverName: memory
+      transport: streamable-http
+      url: http://127.0.0.1:8004/mcp
+
+# 默认会话使用 enterprise agent preset（id-targeted override 替换整个 config）
+- id: agent-presets
+  name: '@deepseek-ai/dsh-agent-presets'
+  config:
+    default: enterprise
+
+# 基准护栏：强制"先查后答"，拦截无工具直答与敷衍应答（含身份注入）
+- insert:
+  - id: guard
+    name: guard
+    config:
+      retryMax: 3
+      identity:
+        name: 周宏伟
+        department: 销售部
+        level: D2
+        role: manager
+        employee_id: "EMP024"

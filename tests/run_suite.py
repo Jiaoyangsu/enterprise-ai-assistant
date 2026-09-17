@@ -101,7 +101,8 @@ def main():
     ops = load_server("ops_server")
     docs = load_server("docs_server")
     sec = load_server("security_server")
-    mods = {"ops": ops, "docs": docs, "sec": sec}
+    mem = load_server("memory_server")
+    mods = {"ops": ops, "docs": docs, "sec": sec, "mem": mem}
 
     tool_to_mod = {
         "lookup_employee": ops, "list_departments": ops, "query_budget": ops,

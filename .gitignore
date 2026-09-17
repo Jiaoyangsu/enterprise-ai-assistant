@@ -9,6 +9,7 @@ tools/flywheel/.bench_last_hash
 # 敏感数据：密钥/口令/会话/证书（绝不入库）
 data/secret.key
 data/auth_users.json
+data/entities.json
 .env
 *.pem
 *.key

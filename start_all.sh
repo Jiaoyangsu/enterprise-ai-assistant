@@ -1,5 +1,5 @@
 #!/bin/bash
-# 启动全部 3 个 MCP Server（优先用 venv）
+# 启动全部 4 个 MCP Server（优先用 venv）
 set -e
 cd "$(dirname "$0")"
 PY="${PY:-.venv/bin/python}"
@@ -13,6 +13,9 @@ $PY mcp_servers/ops_server.py &
 sleep 2
 echo "Starting security server (8003)..."
 $PY mcp_servers/security_server.py &
+sleep 2
+echo "Starting memory server (8004)..."
+$PY mcp_servers/memory_server.py &
 
 echo "All MCP servers started. Press Ctrl+C to stop all."
 wait
