@@ -178,4 +178,6 @@ def _build_message(results, denied, is_authenticated) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", port=8001)
+    from connector import run
+
+    run(mcp, port=8001)

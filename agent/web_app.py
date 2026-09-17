@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(ROOT, "mcp_servers"))
 
 from react_agent import agent, classify_profile  # noqa: E402
 from data import EMPLOYEES  # noqa: E402
+import secure_auth  # noqa: E402
 from workflow import detect_workflow, missing_fields, kind_of, build_draft, dangling_workflow  # noqa: E402
 
 try:
@@ -44,7 +45,6 @@ AUTH_FILE = os.environ.get("AUTH_FILE", os.path.join(ROOT, "data", "auth_users.j
 _human_lock = threading.Lock()
 
 MANAGER_LEVELS = {"D1", "D2", "M1", "M2"}
-DEFAULT_PASSWORD = os.environ.get("AUTH_DEFAULT_PASSWORD", "123456")
 
 # ===== 登录会话（内存 session；Auth 即企业员工目录 + 密码表） =====
 _sessions: dict = {}
@@ -52,57 +52,23 @@ _session_lock = threading.Lock()
 SESSION_HOURS = float(os.environ.get("SESSION_HOURS", "12"))
 
 
-def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
-    """PBKDF2-HMAC-SHA256 哈希密码。返回 (salt, hash)。"""
-    import hashlib
-    salt = salt or secrets.token_hex(16)
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 120_000)
-    return salt, dk.hex()
+def authenticate(name: str, password: str) -> dict | None:
+    """校验姓名+密码，返回该员工的登录上下文；失败返回 None（fail-closed）。
 
-
-def _verify_password(password: str, stored: str) -> bool:
-    """校验密码。支持两种存储格式：
-    - 'pbkdf2$<salt>$<hash>'：新哈希格式
-    - '<明文>'：旧明文（兼容迁移，命中即自动升级为哈希）
+    账号来源：AUTH_USERS 环境变量(JSON) > AUTH_FILE；无 `*` 通配、无隐式默认口令。
+    明文条目命中后自动升级为 PBKDF2 哈希并写回。
     """
-    if stored.startswith("pbkdf2$"):
-        _, salt, expect = stored.split("$", 2)
-        got = _hash_password(password, salt)[1]
-        return got == expect
-    return password == stored
-
-
-def _auth_store() -> dict:
-    try:
-        with open(AUTH_FILE) as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _upgrade_to_hash(name: str, store: dict) -> None:
-    """把该用户的明文密码就地升级为哈希（回调时写回，避免每次比对都明文）。"""
-    val = store.get(name, store.get("*"))
-    if isinstance(val, str) and not val.startswith("pbkdf2$"):
-        salt, h = _hash_password(val)
-        store[name] = f"pbkdf2${salt}${h}"
+    store = secure_auth.load_store(AUTH_FILE)
+    emp = secure_auth.authenticate(name, password, EMPLOYEES, store)
+    if emp is None:
+        return None
+    if secure_auth.needs_upgrade(store.get(name)):
+        store[name] = secure_auth.make_entry(password)
         try:
-            with open(AUTH_FILE, "w") as f:
+            with open(AUTH_FILE, "w", encoding="utf-8") as f:
                 json.dump(store, f, ensure_ascii=False, indent=2)
         except OSError:
             pass
-
-
-def authenticate(name: str, password: str) -> dict | None:
-    """校验姓名+密码，返回该员工的登录上下文；失败返回 None。"""
-    emp = EMPLOYEES.get(name)
-    if not emp:
-        return None
-    store = _auth_store()
-    expected = store.get(name, store.get("*", DEFAULT_PASSWORD))
-    if not _verify_password(password, expected):
-        return None
-    _upgrade_to_hash(name, store)
     level = emp.get("level", "")
     return {
         "name": name,

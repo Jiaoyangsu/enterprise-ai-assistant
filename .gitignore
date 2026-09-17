@@ -6,9 +6,12 @@ __pycache__/
 tools/flywheel/feed.db
 tools/flywheel/.bench_last_hash
 
-# 敏感数据：密钥/口令/会话（绝不入库）
+# 敏感数据：密钥/口令/会话/证书（绝不入库）
 data/secret.key
 data/auth_users.json
+.env
+*.pem
+*.key
 
 # 运行时审计/反馈 JSONL（业务快照留 /tmp，不入库）
 /tmp/**

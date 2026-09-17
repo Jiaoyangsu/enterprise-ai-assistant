@@ -50,6 +50,20 @@ def load_sensitive_words() -> list[str]:
     return ["竞品", "泄密", "薪资倒挂", "跳槽", "机密", "内幕", "裁员", "股票期权"]
 
 
+def load_internal_names() -> list[str]:
+    """内部人员姓名表（用于 PII 脱敏）：data/config.json 的 internal_names 优先，
+    缺省从员工目录派生。可按企业定制，或置为空列表关闭姓名脱敏。"""
+    names = load_config().get("internal_names")
+    if isinstance(names, list):
+        return [str(n) for n in names if n]
+    try:
+        from data import EMPLOYEES  # 员工目录派生
+
+        return list(EMPLOYEES.keys())
+    except Exception:
+        return []
+
+
 def load_policy() -> dict:
     """加载 RBAC 权限策略（唯一权限声明点）。
 

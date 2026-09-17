@@ -18,7 +18,9 @@
 
 - 重启 dsh web：`pkill -f "dsh --profile web"` 后 `nohup dsh --profile web --no-open --port 8787 > /tmp/dsh-web.log 2>&1 &`
 - guard 语法/单测：`node --check ~/.dsh/profiles/web/node_modules/guard/index.js && node ~/.dsh/profiles/web/node_modules/guard/test.js`
-- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）
+- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）、`tests/test_baseline.py`（22）、`tests/test_golden.py`（16）
+- 账号口令管理：`.venv/bin/python tools/set_password.py <姓名> '<口令>'`（或 `--list` / `--remove`）；账号表 `data/auth_users.json`（fail-closed，无通配/默认口令），生产用 `AUTH_USERS` 环境变量注入
+- Connector 生产化（`mcp_servers/connector.py`）：`CONNECTOR_CLIENT_SECRET` 启用 Bearer 鉴权，`CONNECTOR_TLS_CERT`/`CONNECTOR_TLS_KEY` 启用 HTTPS；未设置 secret 时为本地 dev（127.0.0.1 不鉴权）
 - 日志：`/tmp/dsh-web.log`、`/tmp/guard_feedback.jsonl`（guard 拦截记录）
 - 数据飞轮升级为常驻守护进程（自动采集→候选→标注发现→回灌评测→落库知识库→回归）：
   `nohup .venv/bin/python -u tools/flywheel/daemon.py --judge llm > /tmp/flywheel_daemon.log 2>&1 &`
@@ -32,3 +34,10 @@
 - 人工标注 = 编辑 candidates.md 表格第 5 列 expected（留空跳过）+ 第 8 列 reason；保存即触发自动回灌，无需跑命令。
 - **最后一环=新知识自动落库**：`promote()` 末尾调 `ingest_docs()`，把已标注答案写回 `data/documents.json`（ID 从 `DOC-201` 起，`DOC_ID_PREFIX`，避开内置 DOC-001~112；`cases.doc_id` 幂等去重）。`docs_server._documents()` 按文件 mtime 热重载，**落库后无需重启 8001** 即被检索。
 - **端到端 bench 有模型随机性**：react_agent 每次由模型生成检索 query（temperature=0.1），偶发 query 表述不命中导致召回波动。判定飞轮是否生效应看「同一 question 落库后检索能命中 + 多次采样可答对」，而非单次 bench。
+
+## 上架安全基线（WorkBuddy 连接器）
+
+- **认证 fail-closed**：`agent/secure_auth.py` 集中口令校验（PBKDF2-HMAC-SHA256）；账号表无 `*` 通配、无隐式默认口令，未登记账号一律拒绝。生产用 `AUTH_USERS` 环境变量注入，口令/证书永不入库（`.gitignore` 覆盖 `data/auth_users.json`、`.env`、`*.pem`、`*.key`）。
+- **连接器生产化**：`mcp_servers/connector.py` 统一启动，`CONNECTOR_CLIENT_SECRET` → Bearer 鉴权，`CONNECTOR_TLS_CERT/KEY` → HTTPS；满足平台「HTTPS + streamableHttp + client_secret + 单次<30s」。
+- **PII 脱敏**：`security_server.redact_pii` 覆盖手机/身份证/邮箱/银行卡/地址/内部人名，敏感词表与内部人名表均由 `data/config.json` 配置。
+- **LICENSE**：Apache-2.0（无协议不能上架）。

@@ -243,4 +243,6 @@ def _gen_seq() -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", port=8002)
+    from connector import run
+
+    run(mcp, port=8002)

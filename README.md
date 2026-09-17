@@ -51,11 +51,24 @@ tools/flywheel.py ── 数据飞轮(采集→分类→候选→promote→bench
 
 ## 配置位置
 
-- 前端登录密码表：`auth_users.json`（`*` 通配默认密码；可用 `AUTH_DEFAULT_PASSWORD` 环境变量覆盖默认）
+- 账号口令：`data/auth_users.json`（PBKDF2 哈希，**fail-closed：仅登记账号可登录**，无通配/默认口令）；用 `.venv/bin/python tools/set_password.py <姓名> '<口令>'` 管理，或生产用 `AUTH_USERS` 环境变量(JSON) 注入（不落盘）
 - Session 有效期：环境变量 `SESSION_HOURS`（默认 12h）
+- RBAC 权限策略：`data/policy.json`（客户可见角色/文档密级/坐席角色，唯一权限声明点）
 - LLM 后端切换：`tools/switch_backend.sh local|autodl`
 - Persona / dsh 配置：`~/.dsh/.agent-presets/enterprise/agent.cordis.yml`（规则 4/10/11 流程引导）
 - Guard 拦截规则三分同步：`/opt/homebrew/lib/node_modules/guard/index.js` ↔ `~/.dsh/profiles/web/node_modules/guard/` ↔ `profiles/guard/index.js`
+
+## 上架 Connector（生产化）
+
+三个 MCP Server 已是 streamable-http，满足 WorkBuddy 连接器接入方式；生产化开关见 `mcp_servers/connector.py`：
+
+- `CONNECTOR_CLIENT_SECRET`：设置后所有请求必须携带 `Authorization: Bearer <secret>`（client_secret 鉴权）；未设置=本地开发（仅监听 `127.0.0.1`，不鉴权）。
+- `CONNECTOR_TLS_CERT` / `CONNECTOR_TLS_KEY`：同时设置则启用 HTTPS。
+- 平台要求单次工具调用 <30s（当前均为内存/检索类，天然满足）。
+
+## 许可
+
+Apache-2.0，见 [LICENSE](LICENSE)。
 
 ## 业务数据
 
