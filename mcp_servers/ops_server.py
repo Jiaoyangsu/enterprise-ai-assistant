@@ -1,20 +1,11 @@
 """Ops Server - 员工/部门/预算/请假/工单业务逻辑（端口 8002）
 
-P3 优化：
-- 工具精简：7 -> 6（合并 lookup_employee 与 get_leave_balance 为 lookup_employee）
-- description 加场景示例，避免工具混淆
-- 从 data.py 读真实业务数据
+- 读改统一走 SQLite（`store.py`）：首次启动从 data_generated 播种，写操作事务落库。
+- 请假扣减/工单号分配均为库内原子操作，重启不丢、并发不超扣。
 """
 from fastmcp import FastMCP
 
-from data import (
-    DEPARTMENTS,
-    EMPLOYEES,
-    BUDGETS,
-    BG_BUDGETS,
-    CUSTOMERS,
-    CONTRACTS,
-)
+import store
 from data_loader import load_policy
 
 mcp = FastMCP("ops")
@@ -32,7 +23,7 @@ def lookup_employee(name: str) -> dict:
     """查询员工信息：部门、职位、职级、年假余额、入职日期。
     场景示例：'张三在哪个部门？' '我年假还剩几天？' '陈志强什么时候入职的？'
     —— 这是年假余额查询入口，不是考勤/打卡。"""
-    emp = EMPLOYEES.get(name)
+    emp = store.get_employee(name)
     if not emp:
         return {"found": False, "message": f"未找到员工：{name}"}
     return {
@@ -53,7 +44,7 @@ def query_budget(department: str = "", group: str = "") -> dict:
     支持按部门名（技术部/销售部/...）或事业群（技术研发群/市场销售群/运营交付群/职能支持群）查询。
     场景示例：'技术部预算多少？' '技术研发群年度预算？' '运维部预算花了多少？'"""
     if group:
-        bg = BG_BUDGETS.get(group)
+        bg = store.get_bg_budget(group)
         if not bg:
             return {"found": False, "message": f"未找到事业群：{group}"}
         return {
@@ -64,7 +55,7 @@ def query_budget(department: str = "", group: str = "") -> dict:
             "remaining": bg["remaining"],
             "unit": "万元",
         }
-    bud = BUDGETS.get(department)
+    bud = store.get_budget(department)
     if not bud:
         return {"found": False, "message": f"未找到部门：{department}"}
     return {
@@ -75,7 +66,7 @@ def query_budget(department: str = "", group: str = "") -> dict:
         "spent": bud["spent"],
         "remaining": bud["remaining"],
         "unit": "万元",
-        "items": bud["items"],
+        "items": [],
     }
 
 
@@ -84,9 +75,10 @@ def list_departments() -> dict:
     """列出全部事业群与部门、负责人、人数。只读操作。
     场景示例：'公司有哪些部门？' '技术部经理是谁？' '公司分几个事业群？'
     返回 departments[].manager 是部门负责人姓名；回答'XX负责人是谁'时从该字段读取，不要猜测名字。"""
+    departments = store.list_departments()
     return {
         "found": True,
-        "count": len(DEPARTMENTS),
+        "count": len(departments),
         "departments": [
             {
                 "name": d["name"],
@@ -94,7 +86,7 @@ def list_departments() -> dict:
                 "manager": d["manager"],
                 "headcount": d["headcount"],
             }
-            for d in DEPARTMENTS
+            for d in departments
         ],
     }
 
@@ -105,10 +97,18 @@ def get_customer_info(customer_name: str, user_role: str = "") -> dict:
     场景示例：'华宇科技是什么客户？' '天穹金融的信用情况？'"""
     if not _customer_role_allowed(user_role):
         return {"access": "denied", "message": "无权访问客户信息，需要管理层权限"}
-    info = CUSTOMERS.get(customer_name)
+    info = store.get_customer(customer_name)
     if not info:
         return {"found": False, "message": f"未找到客户：{customer_name}"}
-    return {"found": True, "customer": customer_name, **info}
+    return {
+        "found": True,
+        "customer": customer_name,
+        "industry": info["industry"],
+        "contact": info["contact"],
+        "level": info["level"],
+        "contract_amount": info["contract_amount"],
+        "credit": info["credit"],
+    }
 
 
 @mcp.tool()
@@ -118,17 +118,16 @@ def list_customers(industry: str = "", user_role: str = "") -> dict:
     返回 customers[].name 是客户实名；回答客户列举类问题以返回列表为准，逐个列出即可，不要编造返回之外的客户名。"""
     if not _customer_role_allowed(user_role):
         return {"access": "denied", "message": "无权访问客户信息，需要管理层权限"}
-    rows = []
-    for name, info in CUSTOMERS.items():
-        if industry and industry not in info["industry"]:
-            continue
-        rows.append({
-            "name": name,
-            "industry": info["industry"],
-            "level": info["level"],
-            "contract_amount": info.get("contract_amount"),
-            "credit": info.get("credit"),
-        })
+    rows = [
+        {
+            "name": c["name"],
+            "industry": c["industry"],
+            "level": c["level"],
+            "contract_amount": c.get("contract_amount"),
+            "credit": c.get("credit"),
+        }
+        for c in store.list_customers(industry)
+    ]
     if not rows:
         return {"found": False, "message": f"未找到行业含‘{industry}’的客户"}
     return {"found": True, "count": len(rows), "customers": rows}
@@ -143,25 +142,20 @@ def query_contract(contract_id: str = "", customer: str = "", status: str = "") 
     if not contract_id and not customer and not status:
         return {"found": False, "message": "请输入合同号、客户名称，或合同状态（如：审批中）"}
 
-    contracts = [
-        {"contract_id": cid, **c} for cid, c in CONTRACTS.items()
-    ]
     if contract_id:
-        c = CONTRACTS.get(contract_id)
-        return {
-            "found": bool(c),
-            "contract_id": contract_id,
-            **(c or {"message": f"未找到合同：{contract_id}"}),
-        }
+        c = store.get_contract(contract_id)
+        if not c:
+            return {"found": False, "contract_id": contract_id, "message": f"未找到合同：{contract_id}"}
+        return {"found": True, **c}
 
     if customer:
-        results = [c for c in contracts if c["customer"] == customer]
+        results = store.contracts_by_customer(customer)
         if not results:
             return {"found": False, "message": f"未找到客户 {customer} 的合同"}
         return {"found": True, "customer": customer, "contracts": results}
 
     if status:
-        results = [c for c in contracts if status in c["status"]]
+        results = store.contracts_by_status(status)
         if not results:
             return {"found": False, "message": f"未找到状态含‘{status}’的合同"}
         return {"found": True, "status": status, "count": len(results), "contracts": results}
@@ -180,22 +174,23 @@ def create_leave_request(
     """写入操作：提交请假申请。必须用户明确表达'申请/提交请假'意图才执行。
     参数：name(姓名) start_date(YYYY-MM-DD) end_date(YYYY-MM-DD) leave_type(年假/事假/病假) reason(原因)。
     场景示例：'帮我提交3月5日到3月6日的年假申请'"""
-    emp = EMPLOYEES.get(name)
-    if not emp:
-        return {"success": False, "message": f"未找到员工：{name}，无法提交申请"}
     days = _calc_days(start_date, end_date)
     if days <= 0:
         return {"success": False, "message": "结束日期必须晚于开始日期"}
-    if days > emp["leave_balance"]:
-        return {
-            "success": False,
-            "message": f"请假 {days} 天超过剩余年假 {emp['leave_balance']} 天，可用 事假/病假 或缩短假期",
-        }
-    emp["leave_balance"] -= days
+    r = store.create_leave(name, start_date, end_date, days, leave_type, reason)
+    if not r["ok"]:
+        if r["reason"] == "not_found":
+            return {"success": False, "message": f"未找到员工：{name}，无法提交申请"}
+        if r["reason"] == "insufficient":
+            return {
+                "success": False,
+                "message": f"请假 {days} 天超过剩余年假 {r['remaining']} 天，可用 事假/病假 或缩短假期",
+            }
+        return {"success": False, "message": "请假申请写入失败，请稍后重试"}
     return {
         "success": True,
         "ticket_id": f"LV-{start_date}-{name}",
-        "message": f"请假申请已提交：{name} {start_date}~{end_date} 共 {days} 天（{leave_type}），剩余年假 {emp['leave_balance']} 天",
+        "message": f"请假申请已提交：{name} {start_date}~{end_date} 共 {days} 天（{leave_type}），剩余年假 {r['remaining']} 天",
     }
 
 
@@ -215,9 +210,12 @@ def create_ticket(
         else "IT故障" if category == "IT"
         else category
     )
+    r = store.create_ticket(requester, title, description, priority, tickets)
+    if not r["ok"]:
+        return {"success": False, "message": "工单写入失败，请稍后重试"}
     return {
         "success": True,
-        "ticket_id": f"TK-{_gen_seq()}",
+        "ticket_id": r["ticket_id"],
         "message": f"工单已创建：{title}（优先级：{priority}，类别：{tickets}），申请人：{requester}",
     }
 
@@ -231,15 +229,6 @@ def _calc_days(start: str, end: str) -> int:
     except ValueError:
         return -1
     return (e - s).days + 1
-
-
-_seq = 1000
-
-
-def _gen_seq() -> str:
-    global _seq
-    _seq += 1
-    return f"{_seq:04d}"
 
 
 if __name__ == "__main__":

@@ -416,19 +416,42 @@ function add(role, text, tag){
   if(tag){const t=document.createElement('div'); t.className='tag'; t.textContent=tag; d.appendChild(t);}
 }
 let turns=[];
+const CHAT_TIMEOUT_MS=120000;
+async function postChat(payload){
+  const ctl=new AbortController();
+  const timer=setTimeout(()=>ctl.abort(), CHAT_TIMEOUT_MS);
+  try{
+    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:ctl.signal});
+    let d; try{ d=await r.json(); }
+    catch(_){ throw new Error('服务端返回非 JSON（HTTP '+r.status+'）'); }
+    if(!r.ok && !d.answer) throw new Error(d.message||('HTTP '+r.status));
+    return d;
+  } finally { clearTimeout(timer); }
+}
 async function send(){
   const val=q.value.trim(); if(!val) return;
   add('u', val); q.value=''; go.disabled=true;
   add('a', '…思考中'); // 占位
   const t0=performance.now();
-  try{
-    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:val,history:turns.map(t=>({q:t.q,a:t.a}))})});
-    const d=await r.json();
-    box.lastElementChild.remove();
+  const payload={question:val,history:turns.map(t=>({q:t.q,a:t.a}))};
+  let d=null, err=null;
+  for(let attempt=0; attempt<2 && !d; attempt++){
+    try{ d=await postChat(payload); }
+    catch(e){
+      err=e;
+      if(attempt===0){ box.lastElementChild.textContent='网络中断，正在重试…'; await new Promise(r=>setTimeout(r,1200)); }
+    }
+  }
+  box.lastElementChild.remove();
+  if(d){
     const tools=Array.isArray(d.tools)&&d.tools.length? (' · 工具: '+d.tools.join(' → ')) : ' · 未调用工具';
     add('a', d.answer, '用时 '+(d.elapsed_s||0).toFixed(1)+'s · 模型 '+(d.model||'14b')+tools);
     turns.push({q:val,a:d.answer||''}); if(turns.length>20) turns.shift();
-  }catch(e){ box.lastElementChild.remove(); add('a','请求失败: '+e); }
+  } else {
+    const name=(err&&err.name)||'';
+    const tip=name==='AbortError'? '请求超时（后端仍在处理或服务未运行）': String(err);
+    add('a','请求失败: '+tip+'\n请确认服务在运行（/api/health 返回 ok）后重试。');
+  }
   go.disabled=false; q.focus();
 }
 go.onclick=send; q.onkeydown=e=>{ if(e.key==='Enter') send(); };
@@ -465,12 +488,12 @@ LOGIN_PAGE = """<!DOCTYPE html>
     <label for="name">姓名</label>
     <input id="name" placeholder="例如：刘洋" autocomplete="username">
     <label for="pwd">密码</label>
-    <input id="pwd" type="password" placeholder="默认 123456" autocomplete="current-password">
+    <input id="pwd" type="password" placeholder="企业账号密码" autocomplete="current-password">
     <button id="go">登 录</button>
   </form>
   <div class="err" id="err"></div>
-  <div class="hint">演示环境：任意在职员工可用默认密码 123456 登录；经理职级（D1/D2/M1/M2）可见客户信息。<br>
-  密码表：auth_users.json（可加人/改密）。</div>
+  <div class="hint">仅已登记账号可登录（无默认口令）；经理职级（D1/D2/M1/M2）可见客户信息。<br>
+  账号由管理员用 tools/set_password.py 管理。</div>
 </div>
 <script>
 const f=document.getElementById('f'), err=document.getElementById('err');
@@ -542,6 +565,33 @@ load();
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        try:
+            self._do_GET()
+        except Exception as e:  # noqa: BLE001
+            self._safe_error(e)
+
+    def do_POST(self):
+        try:
+            self._do_POST()
+        except Exception as e:  # noqa: BLE001
+            self._safe_error(e)
+
+    def _safe_error(self, e: Exception):
+        """兜底：任何未捕获异常都必须回 JSON，绝不能让连接被直接断开。
+
+        否则浏览器 fetch() 只会看到 `TypeError: Failed to fetch`，无法定位。
+        """
+        try:
+            body = json.dumps(
+                {"answer": "⚠ 服务端异常，请稍后再试。(%s: %s)" % (type(e).__name__, e),
+                 "model": "", "elapsed_s": 0},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            self._send(500, body)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _do_GET(self):
         path = urlparse(self.path).path
         if path == "/api/health":
             ok, issues = healthcheck()
@@ -611,10 +661,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self):
+    def _do_POST(self):
         path = urlparse(self.path).path
-        n = int(self.headers.get("Content-Length", 0))
-        data = json.loads(self.rfile.read(n) or b"{}")
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(n) if n > 0 else b""
+        try:
+            data = json.loads(raw or b"{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send(400, json.dumps({"ok": False, "answer": "请求格式错误（非合法 JSON）。"},
+                                       ensure_ascii=False).encode("utf-8"))
+            return
+        if not isinstance(data, dict):
+            self._send(400, json.dumps({"ok": False, "answer": "请求格式错误（应为 JSON 对象）。"},
+                                       ensure_ascii=False).encode("utf-8"))
+            return
         if path == "/api/login":
             name = (data.get("name") or "").strip()
             pwd = data.get("password") or ""
@@ -784,9 +844,10 @@ def _maybe_wrap_tls(srv):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
-    srv = _maybe_wrap_tls(ThreadingHTTPServer(("127.0.0.1", port), Handler))
+    host = os.environ.get("WEB_HOST", "127.0.0.1")
+    srv = _maybe_wrap_tls(ThreadingHTTPServer((host, port), Handler))
     scheme = "https" if os.environ.get("TLS_CERTFILE") else "http"
-    print(f"前端已启动: {scheme}://127.0.0.1:{port}   (Ctrl+C 退出)")
+    print(f"前端已启动: {scheme}://{host}:{port}   (Ctrl+C 退出)")
     srv.serve_forever()
 
 

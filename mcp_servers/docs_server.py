@@ -2,7 +2,8 @@
 
 - 从 data.py 读真实知识库文档
 - RBAC：public 任何人 / internal 需登录 / confidential 需登录+部门精确匹配
-- TF-IDF 打分 + 关键词加权
+- 混合检索：关键词加权（TF-IDF 风格） + 本地语义向量召回（RRF 融合）；
+  embedding 后端不可用时自动回退纯关键词，行为与旧版一致。
 """
 from fastmcp import FastMCP
 import os
@@ -10,6 +11,7 @@ import re
 
 from data_loader import load_documents, load_policy
 from data_loader import DATA_DIR
+import semantic_index
 
 mcp = FastMCP("docs")
 
@@ -39,45 +41,78 @@ def search_knowledge_base(
     is_authenticated: bool = False,
     max_snippet_chars: int = 600,
 ) -> dict:
-    """在规章制度知识库中检索文档（TF-IDF/关键词匹配），含 RBAC 权限控制。
+    """在规章制度知识库中检索文档（关键词 + 本地语义向量混合），含 RBAC 权限控制。
     密级：public(公开)/internal(内部需登录)/confidential(机密需本部门)。
     场景示例：'请假流程是什么？' '差旅报销标准？' '信息保密有什么规定？'"""
     if not query:
         return {"found": False, "message": "请输入查询内容"}
 
     query_lower = query.lower()
-    results = []
-    denied = []
 
+    # RBAC 前置：先在召回阶段过滤密级，机密文档绝不进入语义索引，避免侧信道泄漏。
+    accessible, denied = [], []
     for doc in _documents():
-        if not _can_access(doc, user_department, is_authenticated):
+        if _can_access(doc, user_department, is_authenticated):
+            accessible.append(doc)
+        else:
             denied.append(
                 {"id": doc["id"], "title": doc["title"], "classification": doc["classification"]}
             )
+
+    kw_scores = {d["id"]: _score_doc(d, query_lower) for d in accessible}
+    kw_hits = {k: v for k, v in kw_scores.items() if v > 0}
+    sem_hits = semantic_index.semantic_search(query, accessible)
+
+    order = _fuse_ranks(kw_hits, sem_hits)
+
+    by_id = {d["id"]: d for d in accessible}
+    results = []
+    for doc_id in order[:5]:
+        doc = by_id.get(doc_id)
+        if doc is None:
             continue
-
-        score = _score_doc(doc, query_lower)
-        if score > 0:
-            results.append(
-                {
-                    "id": doc["id"],
-                    "title": doc["title"],
-                    "content": _snippet_content(doc, query_lower, max_snippet_chars),
-                    "classification": doc["classification"],
-                    "version": doc["version"],
-                    "last_updated": doc["last_updated"],
-                    "score": score,
-                }
-            )
-
-    results.sort(key=lambda x: x["score"], reverse=True)
+        sem = sem_hits.get(doc_id)
+        results.append(
+            {
+                "id": doc["id"],
+                "title": doc["title"],
+                "content": _best_content(doc, query_lower, sem, max_snippet_chars),
+                "classification": doc["classification"],
+                "version": doc["version"],
+                "last_updated": doc["last_updated"],
+                "score": kw_scores.get(doc_id, 0),
+                "semantic_score": round(sem["score"], 4) if sem else 0.0,
+            }
+        )
 
     return {
         "found": bool(results),
-        "results": results[:5],
+        "results": results,
         "denied": denied,
         "message": _build_message(results, denied, is_authenticated),
+        "retrieval": "hybrid" if sem_hits else "keyword",
     }
+
+
+def _fuse_ranks(kw_hits: dict, sem_hits: dict, k: int = 60) -> list:
+    """RRF 融合关键词与语义两路排名；语义不可用时即关键词降序（与旧版一致）。"""
+    if not sem_hits:
+        return sorted(kw_hits, key=kw_hits.get, reverse=True)  # type: ignore[arg-type]
+    kw_rank = {d: i for i, d in enumerate(sorted(kw_hits, key=kw_hits.get, reverse=True), 1)}  # type: ignore[arg-type]
+    sem_rank = {d: i for i, d in enumerate(sorted(sem_hits, key=lambda d: sem_hits[d]["score"], reverse=True), 1)}
+    ids = list(kw_rank) + [d for d in sem_rank if d not in kw_rank]
+    far = 10 ** 6
+    return sorted(ids, key=lambda d: 1 / (k + kw_rank.get(d, far)) + 1 / (k + sem_rank.get(d, far)), reverse=True)
+
+
+def _best_content(doc: dict, query: str, sem: dict | None, max_chars: int) -> str:
+    """优先用语义命中的块（问句同义复述时关键词块常切偏），否则回退关键词切块。"""
+    if sem and sem.get("chunk"):
+        chunk = sem["chunk"]
+        if len(chunk) > max_chars:
+            chunk = chunk[:max_chars]
+        return chunk
+    return _snippet_content(doc, query, max_chars)
 
 
 def _can_access(doc: dict, user_department: str, is_authenticated: bool) -> bool:

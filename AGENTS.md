@@ -17,8 +17,11 @@
 ## 常用命令
 
 - 重启 dsh web：`pkill -f "dsh --profile web"` 后 `nohup dsh --profile web --no-open --port 8787 > /tmp/dsh-web.log 2>&1 &`
+- **跨机访问 dsh 8787**：dsh 明确禁止 `--host 0.0.0.0`（会暴露 RCE），只能本机绑定；他机测试用 SSH 隧道 `ssh -L 8787:127.0.0.1:8787 <user>@<Mac IP>` 再开 token 链接（token 取自 `/tmp/dsh-web.log`，每次重启变化）。跨机直连/反代场景需把权威名加入 `--trusted-host`，否则 `/api` 被 browser-trust fence 拦。
+- **自研 8788 跨机**：`WEB_HOST=0.0.0.0 .venv/bin/python agent/web_app.py 8788`（默认仍绑 `127.0.0.1`，登录 fail-closed）。
 - guard 语法/单测：`node --check ~/.dsh/profiles/web/node_modules/guard/index.js && node ~/.dsh/profiles/web/node_modules/guard/test.js`
-- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）、`tests/test_baseline.py`（22）、`tests/test_golden.py`（16）、`tests/test_entities.py`（18）
+- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）、`tests/test_baseline.py`（22）、`tests/test_golden.py`（16）、`tests/test_entities.py`（18）、`tests/test_store.py`（20）、`tests/test_retrieval.py`（13）
+- 检索索引：`ollama pull bge-m3`（一次性；离线可跳过，检索自动回退关键词）
 - 账号口令管理：`.venv/bin/python tools/set_password.py <姓名> '<口令>'`（或 `--list` / `--remove`）；账号表 `data/auth_users.json`（fail-closed，无通配/默认口令），生产用 `AUTH_USERS` 环境变量注入
 - Connector 生产化（`mcp_servers/connector.py`）：`CONNECTOR_CLIENT_SECRET` 启用 Bearer 鉴权，`CONNECTOR_TLS_CERT`/`CONNECTOR_TLS_KEY` 启用 HTTPS；未设置 secret 时为本地 dev（127.0.0.1 不鉴权）
 - 日志：`/tmp/dsh-web.log`、`/tmp/guard_feedback.jsonl`（guard 拦截记录）
@@ -44,6 +47,15 @@
 - **自研侧**：`react_agent.entity_context_block()` 把"本会话已识别实体 + 指代映射"确定性注入 SYSTEM（不额外调模型）；`resolve_entity` 作为工具时，`user_role`/`is_authenticated`/`context_text` 一律由服务端会话注入（`ctx["_coref_context"]`），模型只给 mention。
 - **dsh 侧**：`~/.dsh/.agent-presets/enterprise/agent.cordis.yml` 与 `~/.dsh/profiles/web/cordis.patch.yml` 已挂 `mcp-memory`（8004）；改完需重启 dsh 才注册工具。仓库副本 `profiles/` 同步维护。
 - **回归**：`tests/test_entities.py`（18 条：抽取/长词优先/RBAC/指代焦点/代词误命中/记忆写入删除）。
+
+## 检索与持久化（上架第 5、6 条）
+
+- **混合检索**：`mcp_servers/semantic_index.py` 用 ollama `bge-m3`（OpenAI 兼容 `/v1/embeddings`，默认 `http://127.0.0.1:11434`）把文档按 ~420 字分块（带一句重叠）向量化，缓存 `data/embeddings_cache.json`；`docs_server.search_knowledge_base` 用 **RRF 融合**关键词与向量两路召回。改检索只动 `semantic_index.py` 与 `docs_server._fuse_ranks/_best_content/_score_doc`。
+- **RBAC 在召回前**：先把无权文档剔除，机密文档**不进入语义索引**（避免侧信道）；embedding 后端不可用时 `semantic_search` 返回空，自动回退纯关键词（行为与旧版一致）。可用 `SEMANTIC_ENABLED=0` 硬关。
+- **持久化单一写入口**：`mcp_servers/store.py` → SQLite `data/app.db`（`APP_DB_FILE` 可覆盖，测试用临时库隔离）。首启从 `data_generated.py` 幂等播种；`ops_server` 读写全部经 store，不再直接用 `data_generated` 的 dict。
+- **写操作必须事务化**：请假扣余额用 `BEGIN IMMEDIATE` + 条件 UPDATE（并发不超扣）；工单号由 `AUTOINCREMENT` 原子分配（`TK-<id+1000>`）。新增写操作一律在 `store.py` 内实现事务，勿在 server 层改内存。
+- **测试**：`tests/test_store.py`（播种/读写/并发不超扣/持久化 20 条）、`tests/test_retrieval.py`（分块/余弦/RRF/RBAC 前置/语义召回 13 条，embedding 不可用时语义断言自动跳过）。
+- **数据文件**：`data/app.db`、`data/embeddings_cache.json` 均运行时生成，已 gitignore。
 
 ## 上架安全基线（WorkBuddy 连接器）
 

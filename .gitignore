@@ -10,6 +10,10 @@ tools/flywheel/.bench_last_hash
 data/secret.key
 data/auth_users.json
 data/entities.json
+data/app.db
+data/app.db-wal
+data/app.db-shm
+data/embeddings_cache.json
 .env
 *.pem
 *.key

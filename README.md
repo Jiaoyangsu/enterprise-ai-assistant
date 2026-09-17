@@ -21,6 +21,8 @@ tools/flywheel.py ── 数据飞轮(采集→分类→候选→promote→bench
 | Ops Server（员工/预算/客户/合同） | 8002 | `mcp_servers/ops_server.py` |
 | Security Server（脱敏/风险检查） | 8003 | `mcp_servers/security_server.py` |
 | Memory Server（实体记忆/指代消解） | 8004 | `mcp_servers/memory_server.py` |
+| 语义检索索引（本地 embedding） | 11434 | `mcp_servers/semantic_index.py`（ollama `bge-m3`） |
+| 业务数据库（SQLite 持久化） | — | `mcp_servers/store.py` → `data/app.db` |
 | dsh Web（框架前端） | 8787 | dsh 框架 |
 | 自建前端（登录/RBAC/坐席） | 8788 | `agent/web_app.py` |
 | 本地 LLM（ollama qwen2.5:14b） | 11434 | 切换脚本 `tools/switch_backend.sh` |
@@ -28,12 +30,16 @@ tools/flywheel.py ── 数据飞轮(采集→分类→候选→promote→bench
 ## 快速启动
 
 ```bash
+# 0. 拉取本地 embedding 模型（混合检索用，一次性；离线环境可跳过，检索自动回退关键词）
+ollama pull bge-m3
+
 # 1. 启动 4 个业务 MCP Server（依赖 fastmcp，见 .venv）
 ./start_all.sh
 
 # 2. 启动自建前端（登录 + RBAC + 人工兜底坐席）
 .venv/bin/python agent/web_app.py 8788
-#     打开 http://127.0.0.1:8788 → 姓名+密码登录（默认密码 123456，见 auth_users.json）
+#     打开 http://127.0.0.1:8788 → 姓名+密码登录（无默认口令；账号见 data/auth_users.json，用 tools/set_password.py 管理）
+#     他人/跨机测试：WEB_HOST=0.0.0.0 .venv/bin/python agent/web_app.py 8788 → http://<本机IP>:8788（仍需登录）
 
 # 3. 自检
 ./check_servers.sh          # MCP 连通性
@@ -44,6 +50,8 @@ tools/flywheel.py ── 数据飞轮(采集→分类→候选→promote→bench
 
 - **多轮问答**：会话历史跨轮带入（支持"孙敏在哪个部门"→"这个部门多少人"的指代续问）；ReAct 循环调用真实 MCP 工具取证，绝不编数据；`verifier` 回检器在交付前审查无源断言，有幻觉兜底重答一次。
 - **实体记忆 + 指代消解**：`mcp_servers/entity_store.py` 把员工/部门/客户/合同建成实体索引（客户/合同受 RBAC）；`memory_server.py`（8004）提供 `resolve_entity`/`extract_entities`，代词（他/那家客户/这个部门/那份合同）按"上下文最后出现的同类型实体"定焦点解析成规范名；自研侧还会把"本会话已识别实体 + 指代映射"确定性注入 SYSTEM。学到的别名/新实体落 `data/entities.json`。
+- **混合检索（关键词 + 本地语义向量）**：`semantic_index.py` 用 ollama `bge-m3` 对文档分块向量化（缓存 `data/embeddings_cache.json`），RRF 融合关键词与向量两路召回，解决中文同义复述失准；RBAC 在召回前过滤，机密文档不进入语义索引。embedding 不可用时自动回退纯关键词。
+- **数据持久化（SQLite）**：`store.py` 把员工/部门/预算/客户/合同 + 请假/工单落 `data/app.db`（首启幂等播种）；请假扣减余额走 `BEGIN IMMEDIATE` 条件更新、工单号由 AUTOINCREMENT 分配，重启不丢、并发不超扣。
 - **登录与 RBAC**：`web_app.py` 姓名+密码登录（cookie session）；身份注入 Agent → 客户信息按角色授限（经理可见 / 普通员工被拒）。
 - **流程工作流（workflow.py，9 类）**：报销 / 请假 / 加班 / 资产申领 / 出差 / 权限申请 / 证明开具 / 培训申请 / 审批查询。
   - 缺字段 → 引导补齐；字段齐 → 代码直接生成可提交草稿清单；审批查询 → 告知到 OA「我的申请」查看，不编造审批节点。
@@ -57,6 +65,8 @@ tools/flywheel.py ── 数据飞轮(采集→分类→候选→promote→bench
 - Session 有效期：环境变量 `SESSION_HOURS`（默认 12h）
 - RBAC 权限策略：`data/policy.json`（客户可见角色/文档密级/坐席角色，唯一权限声明点）
 - LLM 后端切换：`tools/switch_backend.sh local|autodl`
+- 混合检索：`EMBED_MODEL`(默认 `bge-m3`)/`EMBED_BASE_URL`(默认 `http://127.0.0.1:11434`)/`SEMANTIC_ENABLED`(0 关闭)；向量缓存 `data/embeddings_cache.json`
+- 业务数据库：`APP_DB_FILE`(默认 `data/app.db`，测试可用临时库隔离)
 - Persona / dsh 配置：`~/.dsh/.agent-presets/enterprise/agent.cordis.yml`（规则 4/10/11 流程引导）
 - Guard 拦截规则两侧同步（dsh 实际加载 `node_modules` 那份，repo 仅存副本）：`~/.dsh/profiles/web/node_modules/guard/` ↔ `profiles/guard/`（`index.js`/`test.js`/`package.json`）；改完跑 `node profiles/guard/test.js` 并重启 dsh
 
