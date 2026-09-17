@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""数据飞轮：采集 -> 汇聚 -> 分类 -> 候选(评测回灌原料)。
+"""数据飞轮：采集 -> 汇聚 -> 分类 -> 候选 -> 标注回灌 -> 落库 -> 回归（完整闭环）。
 
 数据源（JSONL）：
-  /tmp/guard_feedback.jsonl  guard 插件回馈（guarded/unanswered）
+  /tmp/guard_feedback.jsonl  guard 插件回馈（guarded/unanswered）— dsh 侧自动采集（唯一入口）
   /tmp/web_feedback.jsonl    自建前端 /api/chat 回馈（ok/error）
-汇聚进 sqlite（tools/flywheel/feed.db），去重后按类别出候选清单 markdown，
-候选经人工标注 expected 后可回灌评测集（见 report 输出指引）。
+汇聚进 sqlite（tools/flywheel/feed.db），去重后按类别出候选清单 markdown。
+
+人工标注 = 在 candidates.md 的 expected 列填答案（留空=忽略），保存后：
+  1. promote  -> 写入评测集 benchmark.jsonl（幂等，全量保留）
+  2. 落库     -> ingest_docs() 把答案写回知识库 data/documents.json（DOC-201 起，幂等）
+  3. bench    -> 用评测集跑 react_agent，计算通过率
+以上全流程由守护进程 tools/flywheel/daemon.py 自动完成（未标注的永不进评测）。
 
 用法:
   python3 tools/flywheel.py ingest           # 摄入 jsonl -> db
   python3 tools/flywheel.py report           # 统计 + 候选清单 md（人工填 expected 列）
-  python3 tools/flywheel.py promote          # 把已标 expected 的候选 -> 评测集(print cases+benchmark.jsonl)
+  python3 tools/flywheel.py promote          # 标注 -> 评测集 + 落库知识库
+  python3 tools/flywheel.py ingest-docs      # 仅落库（不动评测集）
   python3 tools/flywheel.py bench            # 用评测集跑 react_agent，计算通过率
 """
 from __future__ import annotations
@@ -27,6 +33,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FLY_DIR = os.path.join(HERE, "flywheel")
 DB = os.path.join(FLY_DIR, "feed.db")
 CAND_MD = os.path.join(FLY_DIR, "candidates.md")
+# 知识库（新知识落库目标）：data/documents.json，与 mcp_servers 共用单一数据源
+DOC_JSON = os.environ.get("FLY_DOC_JSON",
+                          os.path.join(os.path.dirname(HERE), "data", "documents.json"))
+DOC_ID_PREFIX = 201  # 飞轮人工补充知识的 ID 段：DOC-201 起，避开内置 DOC-001~112
 
 SOURCES = {
     "guard": os.environ.get("GUARD_FEEDBACK", "/tmp/guard_feedback.jsonl"),
@@ -62,6 +72,10 @@ def ensure_db():
     )
     try:
         con.execute("ALTER TABLE cases ADD COLUMN reason TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:  # 落库后回写知识库文档 ID（幂等标记：非空则不重复落库）
+        con.execute("ALTER TABLE cases ADD COLUMN doc_id TEXT")
     except sqlite3.OperationalError:
         pass
     con.commit()
@@ -243,22 +257,115 @@ def promote():
             con.execute("UPDATE samples SET promoted=1 WHERE id=?", (row[0],))
         print(f"[{i}] 评测题已收录: {question[:45]}  <- {CATEGORY.get(cat, md_source)}"
               + (f" | 理由: {reason[:30]}" if reason else " | 理由: (未填)"))
-        cases.append({"question": question, "expected": expected, "source": source,
-                      "category": cat, "reason": reason})
     con.commit()
+    # 全量导出：benchmark.jsonl = cases 表全部评测题（新增 + 历史都保留，幂等）
+    all_cases = con.execute(
+        "SELECT question, expected, source, category, reason FROM cases "
+        "ORDER BY id"
+    ).fetchall()
     with open(BENCH_JSON, "w") as f:
-        for c in cases:
-            f.write(json.dumps(c, ensure_ascii=False) + "\n")
+        for c in all_cases:
+            f.write(json.dumps({"question": c[0], "expected": c[1], "source": c[2],
+                                "category": c[3], "reason": c[4]},
+                               ensure_ascii=False) + "\n")
     with open(DOCS_MD, "w") as f:
-        f.write("# 新知识条目草案（人工核对后落库到 documents_extra）\n\n")
-        for c in cases:
-            if c["category"] in ("human", "unanswered"):
-                f.write(f"- 问题：{c['question']}\n")
-                f.write(f"  回答(待核对)：{c['expected']}\n")
-                if c.get("reason"):
-                    f.write(f"  决策理由：{c['reason']}\n")
+        f.write("# 新知识落库审计（人工标注 → 自动写入 data/documents.json）\n\n")
+        f.write("> 由飞轮 promote 自动落库，无需人工核对；此处仅作审计留痕。\n\n")
+        for c in all_cases:
+            if c[3] in ("human", "unanswered"):
+                f.write(f"- 问题：{c[0]}\n")
+                f.write(f"  回答(已落库)：{c[1]}\n")
+                if c[4]:
+                    f.write(f"  决策理由：{c[4]}\n")
     con.close()
-    print(f"评测集已写入 {BENCH_JSON}（{len(cases)} 条）；知识条目标注见 {DOCS_MD}")
+    print(f"评测集已写入 {BENCH_JSON}（累计 {len(all_cases)} 条）；知识条目审计见 {DOCS_MD}")
+    added = ingest_docs()
+    if added:
+        print(f"新知识已落库知识库：{added} 条 -> {DOC_JSON}")
+
+
+# ===== 新知识落库：人工标注的答案写回知识库 data/documents.json（飞轮最后一环）=====
+_DOC_STOP = set("吗呢吧啊呀的了着过和跟对把被是与否么怎么如何哪些哪个有没有会不会该")
+
+
+def _extract_keywords(question: str, max_kw: int = 12) -> list:
+    """从问题提取检索关键词（2~3 字中文 n-gram，过滤疑问/虚词），对齐 docs 检索打分。"""
+    kws, seen = [], set()
+    for n in (3, 2):
+        for i in range(len(question) - n + 1):
+            g = question[i:i + n]
+            if all("\u4e00" <= c <= "\u9fff" for c in g) and not any(c in _DOC_STOP for c in g):
+                if g not in seen:
+                    seen.add(g)
+                    kws.append(g)
+            if len(kws) >= max_kw:
+                return kws
+    return kws
+
+
+def _next_doc_id(docs: list) -> str:
+    used = set()
+    for d in docs:
+        m = re.match(r"DOC-(\d+)$", str(d.get("id", "")))
+        if m:
+            used.add(int(m.group(1)))
+    n = DOC_ID_PREFIX
+    while n in used:
+        n += 1
+    return f"DOC-{n:03d}"
+
+
+def _atomic_write_json(path: str, data: dict):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def ingest_docs() -> int:
+    """把 cases 表中人工已标注的答案落库到知识库，幂等（doc_id 非空则跳过）。返回新增条数。"""
+    con = ensure_db()
+    rows = con.execute(
+        "SELECT id, question, expected FROM cases "
+        "WHERE (doc_id IS NULL OR doc_id='') AND expected IS NOT NULL AND expected != '' "
+        "ORDER BY id"
+    ).fetchall()
+    if not rows:
+        con.close()
+        return 0
+    try:
+        with open(DOC_JSON, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {"version": 1, "documents": []}
+    docs = data.setdefault("documents", [])
+    by_title = {str(d.get("title", "")).strip(): d.get("id", "") for d in docs}
+    today = datetime.now().strftime("%Y-%m-%d")
+    added = 0
+    for cid, question, expected in rows:
+        title = question.strip()
+        if title in by_title:  # 已有同题文档：回填 doc_id 防重复，不重复落库
+            con.execute("UPDATE cases SET doc_id=? WHERE id=?", (by_title[title], cid))
+            continue
+        doc_id = _next_doc_id(docs)
+        docs.append({
+            "id": doc_id,
+            "title": title,
+            "content": expected.strip(),
+            "classification": "internal",
+            "department": "全员",
+            "keywords": _extract_keywords(question),
+            "last_updated": today,
+            "version": "v1.0",
+        })
+        by_title[title] = doc_id
+        con.execute("UPDATE cases SET doc_id=? WHERE id=?", (doc_id, cid))
+        added += 1
+    if added:
+        _atomic_write_json(DOC_JSON, data)
+    con.commit()
+    con.close()
+    return added
 
 
 def judge(expected: str, ans: str) -> tuple[bool, str]:
@@ -319,11 +426,17 @@ def bench(judge_with_llm: bool = False):
     ok_cnt = 0
     relabelled = 0
     for i, c in enumerate(cases, 1):
+        tr = []
         try:
-            ans = agent(c["question"])
+            ans = agent(c["question"], trace=tr)
         except Exception as e:
             print(f"[{i}] {c['question'][:40]}  -> FAIL(异常 {e})")
             continue
+        if os.environ.get("FLY_DEBUG"):
+            for t in tr:
+                print(f"    [debug] tool={t.get('tool')} args={str(t.get('args'))[:90]}")
+                print(f"    [debug]   obs={str(t.get('obs'))[:160]}")
+            print(f"    [debug] ans={ans[:200]!r}")
         ok, ev = judge(c["expected"], ans)
         tag = ""
         if not ok and judge_with_llm:
@@ -354,6 +467,9 @@ def main():
         ingest()
     elif cmd == "promote":
         promote()
+    elif cmd == "ingest-docs":
+        n = ingest_docs()
+        print(f"新知识落库: +{n} 条 -> {DOC_JSON}")
     elif cmd == "bench":
         bench(judge_with_llm=judge_with_llm)
     else:

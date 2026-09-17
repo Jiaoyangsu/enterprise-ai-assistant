@@ -2,9 +2,11 @@
 import re
 from fastmcp import FastMCP
 
+from data_loader import load_sensitive_words
+
 mcp = FastMCP("security")
 
-SENSITIVE_WORDS = ["竞品", "泄密", "薪资倒挂", "跳槽", "机密", "内幕", "裁员", "股票期权"]
+SENSITIVE_WORDS = load_sensitive_words()  # 可配置：data/config.json 的 sensitive_words
 
 
 @mcp.tool()

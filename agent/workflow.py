@@ -196,15 +196,17 @@ def _extract_draft_values(question: str, wf_name: str) -> dict:
     return d
 
 
-def build_draft(question: str, wf_name: str, usr: dict | None) -> str:
-    """字段齐全时由代码直接生成可提交草稿清单（不依赖模型）。"""
+def build_draft(question: str, wf_name: str, usr: dict | None, history: list | None = None) -> str:
+    """字段齐全时由代码直接生成可提交草稿清单（不依赖模型）。
+    history 提供历史用户问题，用于跨轮字段补齐。"""
     wf = next((w for w in WORKFLOWS if w["name"] == wf_name), None)
     if not wf:
         return ""
-    v = _extract_draft_values(question, wf_name)
+    ctx = _history_context(history, question) if history else question
+    v = _extract_draft_values(ctx, wf_name)
     name = usr.get("name") if usr else "刘洋"
     dept = usr.get("department") if usr and usr.get("department") else "技术部"
-    reason = question[:22] + "…" if len(question) > 22 else question
+    reason = question[:22] + "…" if len(question) > 22 else question  # 事由取本轮原文，不拼历史
     rows: list[str] = []
     for f in wf["fields"]:
         if f.get("via"):
@@ -243,8 +245,22 @@ _RESOURCE_RE = re.compile(r"(数据库|系统|CRM|OA|ERP|报表|平台|服务器
 _COURSE_RE = re.compile(r"(培训|课程|研修|认证|训练营|外训)")
 
 
-def missing_fields(question: str, name: str) -> list[str]:
-    """返回该申请流程中，从问题文本还判读不出的必填字段（label）。可判定=自动忽略。"""
+def _history_context(history: list | None, question: str) -> str:
+    """把历史用户问题与当前问题拼成字段提取源。
+
+    只取历史中的 q（用户的话），绝不取 a（那含系统引导语，如"请补齐日期"会污染 _DATE_RE 判定）。
+    跨轮字段补齐就靠它：用户上轮说"帮我请假"，这轮补"5月6日 到 5月7日"，拼起来字段才全。"""
+    qs = [str(h.get("q") or "") for h in (history or []) if isinstance(h, dict)]
+    qs = [q for q in qs if q.strip()][-12:]
+    qs.append(question)
+    return " ".join(qs)
+
+
+def missing_fields(question: str, name: str, history: list | None = None) -> list[str]:
+    """返回该申请流程中，从问题文本还判读不出的必填字段（label）。可判定=自动忽略。
+    history 提供历史用户问题，用于跨轮字段补齐续填。"""
+    if history:
+        question = _history_context(history, question)
     wf = next((w for w in WORKFLOWS if w["name"] == name), None)
     if not wf or wf.get("kind", "apply") != "apply":
         return []
@@ -319,6 +335,23 @@ def detect_workflow(question: str) -> str | None:
         if w.get("kind") == "inquiry":
             return w["name"]
     return hits[0]["name"]
+
+
+def dangling_workflow(history: list | None, question: str) -> str | None:
+    """续填检测：本轮问题未触发任何工作流，但最近对话里系统正在收集某流程字段
+    （上轮回复是"请补齐以下信息…"引导语），则判为继续该流程的补字段轮。
+
+    依据是引导语指纹，而非服务端状态——天然无状态、可跨刷新恢复。
+    """
+    if detect_workflow(question):
+        return None
+    for h in reversed((history or [])[-8:]):
+        a = str(h.get("a") or "")
+        if "请补齐以下信息" in a:
+            wf = detect_workflow(str(h.get("q") or ""))
+            if wf:
+                return wf
+    return None
 
 
 def workflow_system(name: str, question: str) -> str:

@@ -1,1 +1,2 @@
-{"question": "公司对员工结婚有祝贺金吗？", "expected": "公司设有结婚祝贺金：在职员工登记结婚发放1800元祝贺金，凭结婚证向人事部申请。", "source": "web", "category": "human"}
+{"question": "公司对员工结婚有祝贺金吗？", "expected": "公司设有结婚祝贺金：在职员工登记结婚发放1800元祝贺金，凭结婚证向人事部申请。", "source": "web", "category": "human", "reason": null}
+{"question": "新员工集中培训要几天？", "expected": "新员工集中培训为期3天，入职后统一安排。", "source": "web", "category": "ok", "reason": "制度DOC-101培训章节"}

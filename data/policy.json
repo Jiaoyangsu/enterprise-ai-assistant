@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "rbac": {
+    "customer_visible_roles": [
+      "admin",
+      "manager"
+    ],
+    "human_console_roles": [
+      "admin",
+      "manager"
+    ],
+    "docs_visibility": {
+      "public": {
+        "min_auth": false,
+        "departments": []
+      },
+      "internal": {
+        "min_auth": true,
+        "departments": []
+      },
+      "confidential": {
+        "min_auth": true,
+        "departments": []
+      }
+    },
+    "roles": {
+      "admin": {
+        "label": "管理员",
+        "can_access_customers": true
+      },
+      "manager": {
+        "label": "管理层",
+        "can_access_customers": true
+      },
+      "staff": {
+        "label": "普通员工",
+        "can_access_customers": false
+      }
+    }
+  }
+}

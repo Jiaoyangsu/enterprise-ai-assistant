@@ -1,0 +1,34 @@
+# AGENTS.md — 企业知识库助手开发约定
+
+## 架构约定（双实现单一逻辑源）
+
+本系统存在两条实现，必须保持高度一致：
+
+| 侧 | 位置 | 职责 |
+|---|---|---|
+| **dsh 侧（生产入口）** | `~/.dsh/profiles/web/`（cordis.patch.yml + node_modules/guard/index.js） | 界面、会话、模型路由、护栏插件 |
+| **自研侧（MVP 原型）** | `agent/`（react_agent/verifier/web_app.py）+ `mcp_servers/` | 早期验证用，生产不部署 |
+
+- **规则 1：所有业务逻辑改动必须双侧同步**。dsh 侧护栏实现 = `~/.dsh/profiles/web/node_modules/guard/index.js`（JS，对应自研 `agent/verifier.py`）；自研侧任何 verifier/注入/语义规则改动，必须同步移植到 guard/index.js，反之亦然。
+- **规则 2：以 dsh 侧共享的 MCP server 为单一数据源**（`mcp_servers/` → 端口 8001/8002/8003），两侧都通过它取数。改 `mcp_servers/*_server.py` 即双侧生效，无需双份。
+- **规则 3：生产二选一，默认用 dsh web（8787）作为体验/验收主界面**。自研 8788 仅作等价对照，不作为交付目标。
+- **规则 4：开发验证以 dsh 为主**；guard 的 JS 单测在 `~/.dsh/profiles/web/node_modules/guard/test.js`（`node test.js`），与自研 `tests/test_verifier.py` 语义对齐，任何同步改动须两套测试都过。
+
+## 常用命令
+
+- 重启 dsh web：`pkill -f "dsh --profile web"` 后 `nohup dsh --profile web --no-open --port 8787 > /tmp/dsh-web.log 2>&1 &`
+- guard 语法/单测：`node --check ~/.dsh/profiles/web/node_modules/guard/index.js && node ~/.dsh/profiles/web/node_modules/guard/test.js`
+- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）
+- 日志：`/tmp/dsh-web.log`、`/tmp/guard_feedback.jsonl`（guard 拦截记录）
+- 数据飞轮升级为常驻守护进程（自动采集→候选→标注发现→回灌评测→落库知识库→回归）：
+  `nohup .venv/bin/python -u tools/flywheel/daemon.py --judge llm > /tmp/flywheel_daemon.log 2>&1 &`
+  人工标注只需编辑 `tools/flywheel/candidates.md` 的 `expected` 列（留空=跳过），保存后守护进程自动 promote 到 `benchmark.jsonl`、落库 `data/documents.json` 并跑回归。
+
+## 数据飞轮（架构落点）
+
+- **采集在 dsh 侧**：guard 插件自动写 `/tmp/guard_feedback.jsonl`（guarded/unanswered/needs_human），web_app 写 `/tmp/web_feedback.jsonl`——这是唯一数据入口，不改。
+- **汇聚/回灌是独立守护进程** `tools/flywheel/daemon.py`（脱离 dsh 会话模型的批处理作业）：每 60s ingest→report→自动 promote（幂等）→评测集 hash 变化时跑 bench。
+- **benchmark.jsonl 永为全量**：`promote()` 从 cases 表全量导出（新增+历史都保留），不得覆盖式只写当次。守护进程 `.bench_last_hash` 标记避免重复跑 bench。
+- 人工标注 = 编辑 candidates.md 表格第 5 列 expected（留空跳过）+ 第 8 列 reason；保存即触发自动回灌，无需跑命令。
+- **最后一环=新知识自动落库**：`promote()` 末尾调 `ingest_docs()`，把已标注答案写回 `data/documents.json`（ID 从 `DOC-201` 起，`DOC_ID_PREFIX`，避开内置 DOC-001~112；`cases.doc_id` 幂等去重）。`docs_server._documents()` 按文件 mtime 热重载，**落库后无需重启 8001** 即被检索。
+- **端到端 bench 有模型随机性**：react_agent 每次由模型生成检索 query（temperature=0.1），偶发 query 表述不命中导致召回波动。判定飞轮是否生效应看「同一 question 落库后检索能命中 + 多次采样可答对」，而非单次 bench。

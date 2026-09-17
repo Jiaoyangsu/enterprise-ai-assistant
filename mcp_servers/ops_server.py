@@ -15,8 +15,16 @@ from data import (
     CUSTOMERS,
     CONTRACTS,
 )
+from data_loader import load_policy
 
 mcp = FastMCP("ops")
+
+
+def _customer_role_allowed(user_role: str) -> bool:
+    """客户信息 RBAC：角色是否在 policy 声明内（可定制），空角色默认拒绝。"""
+    if not user_role:
+        return False
+    return user_role in load_policy()["customer_visible_roles"]
 
 
 @mcp.tool()
@@ -95,7 +103,7 @@ def list_departments() -> dict:
 def get_customer_info(customer_name: str, user_role: str = "") -> dict:
     """查询客户信息（行业、联系人、等级、合同额、信用）。需 RBAC：仅管理层(admin/manager)可查看。
     场景示例：'华宇科技是什么客户？' '天穹金融的信用情况？'"""
-    if user_role not in ("admin", "manager"):
+    if not _customer_role_allowed(user_role):
         return {"access": "denied", "message": "无权访问客户信息，需要管理层权限"}
     info = CUSTOMERS.get(customer_name)
     if not info:
@@ -108,7 +116,7 @@ def list_customers(industry: str = "", user_role: str = "") -> dict:
     """列出客户列表，或按行业筛选客户。只读操作。RBAC：仅管理层(admin/manager)可查看。
     场景示例：'有哪些客户？' '做跨境电商的客户有哪些？' '制造业的客户有哪些？'
     返回 customers[].name 是客户实名；回答客户列举类问题以返回列表为准，逐个列出即可，不要编造返回之外的客户名。"""
-    if user_role not in ("admin", "manager"):
+    if not _customer_role_allowed(user_role):
         return {"access": "denied", "message": "无权访问客户信息，需要管理层权限"}
     rows = []
     for name, info in CUSTOMERS.items():

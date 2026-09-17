@@ -1,10 +1,11 @@
 """零依赖本地 Web 前端：浏览器里直接和 agent（默认 14b）对话。
 
 用法:  .venv/bin/python agent/web_app.py [port]
-访问:  http://127.0.0.1:8787
+访问:  http://127.0.0.1:8788（自研 MVP，仅等价对照；生产主界面用 dsh web 8787）
 """
 import json
 import os
+import re
 import secrets
 import socket
 import sys
@@ -21,13 +22,25 @@ sys.path.insert(0, os.path.join(ROOT, "mcp_servers"))
 
 from react_agent import agent, classify_profile  # noqa: E402
 from data import EMPLOYEES  # noqa: E402
-from workflow import detect_workflow, missing_fields, kind_of, build_draft  # noqa: E402
+from workflow import detect_workflow, missing_fields, kind_of, build_draft, dangling_workflow  # noqa: E402
+
+try:
+    from data_loader import load_policy  # noqa: E402
+
+    def _human_console_roles() -> set:
+        """读 policy 的人工坐席可用角色（默认 admin/manager，可定制）。"""
+        return set(load_policy().get("rbac", {}).get(
+            "human_console_roles", ["admin", "manager"]))
+except ImportError:  # 独立运行但缺 data_loader 时兜底
+    def _human_console_roles() -> set:
+        return {"admin", "manager"}
 
 FEEDBACK = os.environ.get("WEB_FEEDBACK", "/tmp/web_feedback.jsonl")
 HUMAN_QUEUE = os.environ.get("HUMAN_QUEUE", "/tmp/human_queue.jsonl")
 HUMAN_ANSWERS = os.environ.get("HUMAN_ANSWERS", "/tmp/human_answers.jsonl")
 GUARD_FEEDBACK = os.environ.get("GUARD_FEEDBACK", "/tmp/guard_feedback.jsonl")
-AUTH_FILE = os.path.join(ROOT, "auth_users.json")
+SESSION_HISTORY_DIR = os.environ.get("SESSION_HISTORY_DIR", "/tmp/web_sessions")
+AUTH_FILE = os.environ.get("AUTH_FILE", os.path.join(ROOT, "data", "auth_users.json"))
 _human_lock = threading.Lock()
 
 MANAGER_LEVELS = {"D1", "D2", "M1", "M2"}
@@ -39,12 +52,45 @@ _session_lock = threading.Lock()
 SESSION_HOURS = float(os.environ.get("SESSION_HOURS", "12"))
 
 
+def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    """PBKDF2-HMAC-SHA256 哈希密码。返回 (salt, hash)。"""
+    import hashlib
+    salt = salt or secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 120_000)
+    return salt, dk.hex()
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    """校验密码。支持两种存储格式：
+    - 'pbkdf2$<salt>$<hash>'：新哈希格式
+    - '<明文>'：旧明文（兼容迁移，命中即自动升级为哈希）
+    """
+    if stored.startswith("pbkdf2$"):
+        _, salt, expect = stored.split("$", 2)
+        got = _hash_password(password, salt)[1]
+        return got == expect
+    return password == stored
+
+
 def _auth_store() -> dict:
     try:
         with open(AUTH_FILE) as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _upgrade_to_hash(name: str, store: dict) -> None:
+    """把该用户的明文密码就地升级为哈希（回调时写回，避免每次比对都明文）。"""
+    val = store.get(name, store.get("*"))
+    if isinstance(val, str) and not val.startswith("pbkdf2$"):
+        salt, h = _hash_password(val)
+        store[name] = f"pbkdf2${salt}${h}"
+        try:
+            with open(AUTH_FILE, "w") as f:
+                json.dump(store, f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
 
 
 def authenticate(name: str, password: str) -> dict | None:
@@ -54,8 +100,9 @@ def authenticate(name: str, password: str) -> dict | None:
         return None
     store = _auth_store()
     expected = store.get(name, store.get("*", DEFAULT_PASSWORD))
-    if password != expected:
+    if not _verify_password(password, expected):
         return None
+    _upgrade_to_hash(name, store)
     level = emp.get("level", "")
     return {
         "name": name,
@@ -136,6 +183,121 @@ def _read_jsonl(path: str) -> list:
             return [json.loads(l) for l in f if l.strip()]
     except (OSError, json.JSONDecodeError):
         return []
+
+
+# ===== 会话历史持久化（Fernet 加密，防明文落盘） =====
+_SECRET_KEY_PATH = os.path.join(ROOT, "data", "secret.key")
+
+
+def _fernet_key() -> bytes:
+    """取加密密钥：优先 env，次选 key 文件，缺省生成并保存。"""
+    import base64
+    raw = os.environ.get("SESSION_SECRET")
+    if raw:
+        if len(raw) == 44:
+            return raw.encode()
+        from hashlib import sha256
+        return base64.urlsafe_b64encode(sha256(raw.encode()).digest())
+    try:
+        with open(_SECRET_KEY_PATH, "rb") as f:
+            return f.read().strip()
+    except OSError:
+        from cryptography.fernet import Fernet
+        key = Fernet.generate_key()
+        os.makedirs(os.path.dirname(_SECRET_KEY_PATH), exist_ok=True)
+        fd = os.open(_SECRET_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, key)
+        os.close(fd)
+        return key
+
+
+from cryptography.fernet import Fernet as _FernetCls  # noqa: E402（确保本地可用）
+_fernet_cache: _FernetCls | None = None
+
+
+def _fernet() -> _FernetCls:
+    global _fernet_cache
+    if _fernet_cache is None:
+        _fernet_cache = _FernetCls(_fernet_key())
+    return _fernet_cache
+
+
+def _session_file(tok: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", tok or "")
+    return os.path.join(SESSION_HISTORY_DIR, f"{safe}.enc")  # .enc 后缀=加密文件
+
+
+def _session_file_plain(tok: str) -> str:
+    """旧明文文件路径（迁移期 fallback 读取用）。"""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", tok or "")
+    return os.path.join(SESSION_HISTORY_DIR, f"{safe}.jsonl")
+
+
+def session_history(tok: str | None) -> list[dict]:
+    """返回该会话已持久化的问答轮 [{q, a}, ...]。自动兼容旧明文文件并升级。"""
+    if not tok:
+        return []
+    enc_path = _session_file(tok)
+    plain_path = _session_file_plain(tok)
+    fer = _fernet()
+    lines: list[str] = []
+    upgraded = False
+    # 优先读加密文件
+    if os.path.exists(enc_path):
+        try:
+            with open(enc_path, "rb") as f:
+                data = fer.decrypt(f.read()).decode("utf-8")
+            lines = [l for l in data.splitlines() if l.strip()]
+        except Exception:
+            lines = []
+    # 兼容旧明文文件（读完即加密升级）
+    elif os.path.exists(plain_path):
+        try:
+            with open(plain_path) as f:
+                lines = [l for l in f if l.strip()]
+            upgraded = True
+        except (OSError, json.JSONDecodeError):
+            lines = []
+    rec = []
+    for l in lines:
+        try:
+            rec.append(json.loads(l))
+        except json.JSONDecodeError:
+            continue
+    if upgraded and rec:
+        try:
+            encrypted = fer.encrypt(b"\n".join(line.encode() for line in lines))
+            with open(enc_path, "wb") as f:
+                f.write(encrypted)
+            os.remove(plain_path)
+        except OSError:
+            pass
+    return [{"q": r.get("q", ""), "a": r.get("a", "")} for r in rec
+            if isinstance(r, dict) and r.get("q")]
+
+
+def append_session_history(tok: str | None, q: str, a: str):
+    """把本轮问答追加到会话历史文件（Fernet 加密）。"""
+    if not tok or not q:
+        return
+    try:
+        os.makedirs(SESSION_HISTORY_DIR, exist_ok=True)
+        enc_path = _session_file(tok)
+        fer = _fernet()
+        new_line = (json.dumps({"q": q, "a": a}, ensure_ascii=False) + "\n").encode()
+        # 增量追加：读旧 → 拼新 → 加密写回
+        if os.path.exists(enc_path):
+            try:
+                with open(enc_path, "rb") as f:
+                    old = fer.decrypt(f.read())
+            except Exception:
+                old = b""
+        else:
+            old = b""
+        with open(enc_path, "wb") as f:
+            f.write(fer.encrypt(old + new_line))
+    except OSError:
+        pass
 
 
 def _answered_keys() -> set:
@@ -266,6 +428,18 @@ const who=document.getElementById('who');
       const a=document.createElement('a'); a.textContent='退出';
       a.onclick=async()=>{ await fetch('/api/logout',{method:'POST'}); location.href='/login'; };
       who.appendChild(a);
+      // 会话历史恢复：刷新/重开后不丢上下文
+      try{
+        const hr=await fetch('/api/session_history'); const hd=await hr.json();
+        if(hd.ok&&Array.isArray(hd.history)&&hd.history.length){
+          for(const it of hd.history){
+            if(it.q) add('u', it.q);
+            if(it.a) add('a', it.a, it.t?(' · '+it.t):'');
+            turns.push({q:it.q||'',a:it.a||''});
+          }
+          if(turns.length>20) turns.splice(0, turns.length-20);
+        }
+      }catch(_){}
     }
   }catch(_){}
 })();
@@ -425,10 +599,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({"ok": True, "user": u}, ensure_ascii=False).encode("utf-8"))
             return
         if path == "/api/human/list":
-            if not session_user(tok):
-                self._send(401, json.dumps({"ok": False, "message": "未登录"}, ensure_ascii=False).encode("utf-8"))
+            u = session_user(tok)
+            if not u or u.get("user_role", "") not in _human_console_roles():
+                self._send(403, json.dumps({"ok": False, "message": "仅人工坐席角色可访问"}, ensure_ascii=False).encode("utf-8"))
                 return
             body = json.dumps({"items": _collect_human_queue()}, ensure_ascii=False).encode("utf-8")
+            self._send(200, body)
+            return
+        if path == "/api/session_history":
+            u = session_user(tok)
+            if not u:
+                self._send(401, json.dumps({"ok": False, "message": "未登录"}, ensure_ascii=False).encode("utf-8"))
+                return
+            body = json.dumps({"ok": True, "history": session_history(tok)}, ensure_ascii=False).encode("utf-8")
             self._send(200, body)
             return
         if path in ("/", "/human"):
@@ -438,6 +621,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
         if path == "/human":
+            u = session_user(tok)
+            if not u:
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers()
+                return
+            if u.get("user_role", "") not in _human_console_roles():
+                self._send(403, b"forbidden", ctype="text/plain; charset=utf-8")
+                return
             body = HUMAN_PAGE.encode("utf-8")
             self._send(200, body, ctype="text/html; charset=utf-8")
             return
@@ -488,8 +680,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, json.dumps({"answer": "未登录或会话已过期，请先登录后再提问。", "model": "", "elapsed_s": 0}, ensure_ascii=False).encode("utf-8"))
             return
         if path == "/api/human/answer":
+            u = session_user(tok)
+            if not u or u.get("user_role", "") not in _human_console_roles():
+                self._send(403, json.dumps({"ok": False, "message": "仅人工坐席角色可回填"}, ensure_ascii=False).encode("utf-8"))
+                return
             qhash = (data.get("qhash") or "").strip()
             ans = (data.get("answer") or "").strip()
+            if not ans:
+                self._send(400, json.dumps({"ok": False, "message": "回填答案不能为空"}, ensure_ascii=False).encode("utf-8"))
+                return
+            refuse_hits = [w for w in ("未写明", "请咨询", "无法提供", "未找到", "不能回答") if w in ans]
+            if refuse_hits:
+                self._send(400, json.dumps({"ok": False, "message": "回填答案含敷衍话术：" + "、".join(refuse_hits)}, ensure_ascii=False).encode("utf-8"))
+                return
             _append_jsonl(HUMAN_ANSWERS, {"qhash": qhash, "answer": ans[:2000]})
             if ans and qhash:
                 try:
@@ -519,7 +722,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     trace = []
                     allow = classify_profile(question)
-                    wf_name = detect_workflow(question)
+                    wf_name = detect_workflow(question) or dangling_workflow(history, question)
                     guided = False
                     if wf_name:
                         guided = True
@@ -538,17 +741,17 @@ class Handler(BaseHTTPRequestHandler):
                                        "model": "web/workflow-inquiry", "tools": [], "allow": allow,
                                        "elapsed_s": round(time.time() - t0, 1), "workflow": wf_name}
                         else:
-                            missing = missing_fields(question, wf_name)
+                            missing = missing_fields(question, wf_name, history=history)
                             if missing:
                                 out = {
-                                    "answer": "收到，需要走「%s」流程。请补齐以下信息后我再帮你生成草稿单：\n"
+                                    "answer": "收到，继续「%s」流程。请补齐以下信息后我再帮你生成草稿单：\n"
                                               "· %s\n（姓名/部门可用当前登录人，金额与日期请按实际填写）" % (wf_name, "\n· ".join(missing)),
                                     "model": "web/workflow-guide", "tools": [], "allow": allow,
                                     "elapsed_s": round(time.time() - t0, 1), "workflow": wf_name,
                                     "needs_fields": missing,
                                 }
                             else:
-                                out = {"answer": build_draft(question, wf_name, usr),
+                                out = {"answer": build_draft(question, wf_name, usr, history=history),
                                        "model": "web/workflow-draft", "tools": [], "allow": allow,
                                        "elapsed_s": round(time.time() - t0, 1), "workflow": wf_name}
                     if not guided:
@@ -569,6 +772,7 @@ class Handler(BaseHTTPRequestHandler):
                                       "answer": out["answer"], "tools": [],
                                       "trace": _feed_trace(trace),
                                       "elapsed_s": out["elapsed_s"], "status": 200, "workflow": wf_name})
+                    append_session_history(tok, question, out.get("answer", ""))
                 except Exception as e:
                     status, out = 500, err_to_dict(str(e))
                     log_feedback({"source": "web", "question": question, "status": 500,
@@ -596,10 +800,27 @@ def degraded_dict(issues: list) -> dict:
             "model": "", "elapsed_s": 0}
 
 
+def _maybe_wrap_tls(srv):
+    """若设置 TLS_CERTFILE/TLS_KEYFILE 则把 HTTP server 包成 HTTPS。
+
+    生产环境建议用反向代理（nginx/网关）终止 TLS，此处提供直连选项。
+    """
+    cert = os.environ.get("TLS_CERTFILE")
+    key = os.environ.get("TLS_KEYFILE")
+    if not cert or not key:
+        return srv
+    import ssl
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(certfile=cert, keyfile=key)
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    return srv
+
+
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"前端已启动: http://127.0.0.1:{port}   (Ctrl+C 退出)")
+    srv = _maybe_wrap_tls(ThreadingHTTPServer(("127.0.0.1", port), Handler))
+    scheme = "https" if os.environ.get("TLS_CERTFILE") else "http"
+    print(f"前端已启动: {scheme}://127.0.0.1:{port}   (Ctrl+C 退出)")
     srv.serve_forever()
 
 

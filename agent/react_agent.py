@@ -19,23 +19,35 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from llm import chat  # noqa: E402
 from boundaries import BOUNDARY_RULES  # noqa: E402
-from verifier import verify  # noqa: E402
+from verifier import verify, MEASURE_WORDS  # noqa: E402
 from workflow import detect_workflow, workflow_system  # noqa: E402
+from injection import scan_injection, observation_guard, mask_pii  # noqa: E402
+from audit import audit_tool_call  # noqa: E402
 
 MAX_STEPS = 6
 
-MAX_HISTORY_TURNS = 8  # 多轮对话最多带入的历史问答对（防爆 token / 防长文本注入）
+MAX_HISTORY_TURNS = 8  # 多轮对话最多带入的完整问答轮（防爆 token / 防长文本注入）
 
 
 def _fmt_history(history: list | None) -> list[dict]:
     """把多轮历史 [{q, a}] 转成 messages 中 system 之后的 user/assistant 轮次。
 
-    策略：截断单条长度 + 只保留最近 MAX_HISTORY_TURNS 轮，历史中不含工具观测
-    （工具轨迹由本轮 re-act 自取，避免把旧观测注入误导新推理）。"""
+    策略：
+    - 最近 MAX_HISTORY_TURNS 轮保留完整对话（q 截 600 字 / a 截 1200 字）。
+    - 更早的轮次全部滚成一条"此前已讨论"摘要（抽取实体/业务数值/流程名等关键线索，
+      保语义不保全文，实体总数封顶防爆 token）——长会话早期上下文不丢。
+    - 历史中不含工具观测（工具轨迹由本轮 re-act 自取，避免把旧观测注入误导新推理）。"""
+    items = [it for it in (history or []) if isinstance(it, dict)]
+    recent = items[-MAX_HISTORY_TURNS:]
+    older = items[:-MAX_HISTORY_TURNS] if len(items) > MAX_HISTORY_TURNS else []
+
     msgs: list[dict] = []
-    for item in (history or [])[-MAX_HISTORY_TURNS:]:
-        if not isinstance(item, dict):
-            continue
+    if older:
+        summary = _summarize_history(older)
+        if summary:
+            msgs.append({"role": "user", "content": "（此前已讨论，摘要）" + summary})
+            msgs.append({"role": "assistant", "content": "（摘要已收悉，继续当前话题）"})
+    for item in recent:
         q = (str(item.get("q") or "")).strip()[:600]
         a = (str(item.get("a") or "")).strip()[:1200]
         if q:
@@ -43,6 +55,27 @@ def _fmt_history(history: list | None) -> list[dict]:
         if a:
             msgs.append({"role": "assistant", "content": a})
     return msgs
+
+
+_ENTITY_RE = re.compile(
+    r"(DOC-\d{3}|HT-\d{4}-\d{3}|\d+\.?\d*\s*(元|万|天|个工作日|%|人|小时)|"
+    r"[一-龥]{2,6}(部|部门|事业群)|[\u4e00-\u9fff]{2,4}(请假|报销|年假|加班|出差|培训|转正|入职|离职))"
+)
+
+
+def _summarize_history(older: list[dict]) -> str:
+    """把更早的轮次压成一条要点摘要：只保留实体/业务数值/流程名，去重保序。"""
+    seen: set[str] = set()
+    bits: list[str] = []
+    for it in older:
+        q = str(it.get("q") or "")[:300]
+        for m in _ENTITY_RE.finditer(q):
+            token = m.group(0).strip()
+            if token and token not in seen:
+                seen.add(token)
+                bits.append(token)
+    cap = bits[:120]
+    return "；".join(cap) if cap else ""
 
 # 工具注册表：真实业务函数
 import ops_server as _ops
@@ -178,8 +211,9 @@ _SYSTEM_TEMPLATE = """你是企业知识库 AI 助手。你通过调用工具获
 7. 内容纪律（作答阶段强制）：
 - 直接给出结论，最多 1-3 句；禁止两段式长解释，禁止列"选项式/建议式"官方话术，禁止"如需进一步了解可咨询人力资源部/IT 部门"这类顾问式尾巴。
 - 答案涉及制度/数据的数字、日期、期限、责任单位、措施时，必须来自工具返回原文，并在句末标注出处编号（DOC-xxx；用户/部门/客户/合同类业务数据无需标注）。
+- 长文档只回答与用户问题最直接相关的那一条条文：先看问题问什么（天数/金额/条件/流程），再在返回原文里找**命中该意图的那句话**作依据，不要引用旁支条文，不要罗列整篇内容。
 - 禁止用"通常/大概/可能/一般/建议咨询"等模糊词替代确定数字；返回中没有的数字就说"制度中未写明"。
-- 返回文本里没有的措施（如补考、额外培训、二次面谈）一律不得出现在回答中，宁缺毋滥。
+- 返回文本里没有的措施（如{measure_words}等）一律不得出现在回答中，宁缺毋滥。
 
 {boundaries}
 """
@@ -209,6 +243,7 @@ def _render_system(allow: set[str], user_ctx: dict | None = None) -> str:
         USER_DEPT=dept,
         USER_AUTH=auth,
         boundaries=BOUNDARY_RULES,
+        measure_words="、".join(MEASURE_WORDS[:3]),
     )
 
 
@@ -288,9 +323,14 @@ def run_tool(name: str, args: dict, ctx: dict, allow: set[str] | None = None) ->
         if not nm or nm in ("用户姓名", "##用户身份##", "我", "本人", "员工"):
             resolved["name"] = ctx["name"]
     try:
-        return json.dumps(fn(**resolved), ensure_ascii=False)
+        obs = json.dumps(fn(**resolved), ensure_ascii=False)
+        # 安全审计：记录谁在何时以何参数调了何工具（含密级敏感标记）
+        audit_tool_call(ctx, name, resolved, obs)
+        return obs
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        err = json.dumps({"error": str(e)}, ensure_ascii=False)
+        audit_tool_call(ctx, name, resolved, err)
+        return err
 
 
 def extract_json_object(text: str) -> dict:
@@ -353,22 +393,37 @@ def strip_to_natural(text: str) -> str:
     return text.strip()
 
 
-def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None, allow_retry: bool = True, allow: list[str] | None = None, user_ctx: dict | None = None, history: list | None = None) -> str:
-    """运行 ReAct 循环，返回最终答案。verbose=True 时实时输出推理过程。
-    回答前先经过回检器（verifier）：无源断言（DOC 编号/带单位数字/措施词不在工具返回中）
+def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None, allow_retry: bool = True, allow: list[str] | None = None, user_ctx: dict | None = None, history: list | None = None, out: dict | None = None) -> str:
+    """运行 ReAct 循环，返回最终答案。回答前先经过回检器（verifier）：无源断言（DOC 编号/带单位数字/措施词不在工具返回中）
     会触发一次纠正重答（allow_retry=True 时），把幻觉压到最低。
     allow（工具白名单）：默认全部读工具（写工具一律排除）。传更小集合可做到最小暴露——
     模型只能看到/调用白名单内的工具，白名单外调用被 run_tool 拒绝，绝不执行。
     trace（可选）：传入 list，每次工具调用会追加 {"tool", "args", "obs"}，用于 AB 实验判分，不改行为。
     user_ctx（可选）：登录会话身份 {name, department, user_role}——取代硬编码"刘洋"，用于工具参数与客户信息 RBAC。
     history（可选）：多轮对话历史 [{q, a}, ...]，作为本轮之前的 user/assistant 上下文拼进 messages
-    （支持"张三在哪个部门 → 那个部门多少人"类指代；限制最近 8 轮 + 单条截断）。"""
+    （支持"张三在哪个部门 → 那个部门多少人"类指代；限制最近 8 轮 + 单条截断）。
+    out（可选）：传入 dict 会写入回检裁决 {"answer", "verdict"(ok/soft/fail), "issues", "soft_notes"}，
+    供监控/评测消费；verdict="soft" 表示已交付但存在宽松命中断言，建议标"待核实"。"""
     if allow is None:
         allow_set = set(READ_TOOLS)
     else:
         allow_set = set(n for n in allow if n in READ_TOOLS)  # 白名单以读工具为上限，写工具永不给
     ctx = resolve_context(question, user_ctx)
     wf_name = detect_workflow(question)
+
+    # 入口防线：用户问题/历史包含注入模式 → 直接拒绝，不进 ReAct 循环
+    if scan_injection(question) or any(scan_injection(str(it.get("q") or "")) for it in (history or [])):
+        if out is not None:
+            out.setdefault("verdict", "ok")
+            out.setdefault("issues", [])
+            out.setdefault("soft_notes", ["已拦截 prompt 注入输入"])
+        return "检测到您的输入包含越权/覆盖指令类内容，为保障企业数据安全，本次请求已被拦截，请改述问题后重试。"
+
+    def redact(ans: str) -> str:
+        """出口防线：所有用户可见回答必经 PII 脱敏（手机号/身份证）。"""
+        safe, _ = mask_pii(ans)
+        return safe
+
     system = _render_system(allow_set, ctx)
     if wf_name:
         system += workflow_system(wf_name, question)
@@ -377,11 +432,18 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
     messages.append({"role": "user", "content": question})
 
     def deliver(ans: str) -> str | None:
-        """回检通过才交付；被拦截且还有重试机会时返回 None 触发下一轮重答。"""
+        """回检：verdict="fail" 且还有重试机会时触发纠正重答并返回 None；
+        "ok"/"soft" 一律交付（soft 记录进 out.soft_notes）。"""
         verdict = verify(question, trace or [], ans)
         if verbose:
-            print(f"    └─[回检] ok={verdict['ok']} issues={verdict['issues'][:5]}")
-        if allow_retry and not verdict["ok"]:
+            print(f"    └─[回检] verdict={verdict['verdict']} issues={verdict['issues'][:5]} soft={verdict['soft_notes'][:3]}")
+        if out is not None:
+            out.update({
+                "verdict": verdict["verdict"],
+                "issues": verdict["issues"],
+                "soft_notes": verdict["soft_notes"],
+            })
+        if allow_retry and verdict["verdict"] == "fail":
             if first_ans[0] is None:
                 first_ans[0] = ans  # 记住首次自然回答，作兜底
             messages.append({"role": "user", "content": (
@@ -403,7 +465,7 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
             if "answer" in action:
                 ans = deliver(str(action["answer"]).strip())
                 if ans is not None:
-                    return ans
+                    return redact(ans)
                 break  # 被回检拦截，进入重答轮
             tool = action.get("tool")
             if tool:
@@ -417,7 +479,7 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
                 if verbose:
                     print(f"    └─[{step}] 观测: {obs[:260]}")
                 messages.append({"role": "assistant", "content": raw})
-                messages.append({"role": "tool", "name": tool, "content": obs})
+                messages.append({"role": "tool", "name": tool, "content": observation_guard(obs)})
                 continue
             # JSON 解析失败但明显是答案：用软解析兜底
             ans0 = extract_answer_text(raw)
@@ -426,20 +488,28 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
                 if ans is not None:
                     if verbose:
                         print(f"    └─[完成][软解析] {ans[:200]}")
-                    return ans
+                    return redact(ans)
                 break
             # 无工具也无 answer：视为模型直接作答（拒答/说明）
             ans = deliver(strip_to_natural(raw))
             if ans is not None:
                 if verbose:
                     print(f"    └─[完成][直接作答] {ans[:200]}")
-                return ans
+                return redact(ans)
             break
         else:
             return "[达到步数上限] " + messages[-1]["content"][:400]
     # 重试耗尽：绝不把回检指令/无源内容暴露给用户
     if first_ans[0] and not trace:
-        return first_ans[0]
+        if out is not None:
+            out.setdefault("verdict", "soft")
+            out.setdefault("issues", [])
+            out.setdefault("soft_notes", ["重答耗尽，退回首次自然回答（未通过回检）"])
+        return redact(first_ans[0])
+    if out is not None:
+        out.setdefault("verdict", "fail")
+        out.setdefault("issues", ["重答耗尽且无兜底，未能确认证据"])
+        out.setdefault("soft_notes", [])
     return "未能从公司制度文档中确认以上信息，请查阅相关制度原文或咨询人事/财务/行政对口部门，以免误用。"
 
 
