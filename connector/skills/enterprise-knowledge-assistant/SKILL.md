@@ -5,7 +5,7 @@ display_name_en: Enterprise Knowledge Assistant
 description: 查询企业制度与知识库、员工/预算/部门/合同等信息，并对文本中的个人信息脱敏；当用户询问公司制度、假期余额、部门预算、合同进度，或需要脱敏手机号/身份证/邮箱时使用。
 description_zh: 查询企业制度与业务数据，并对个人信息脱敏。
 description_en: Search enterprise policies and business data, and redact personal information.
-category: productivity
+category: 04-DataAI
 version: 1.0.0
 author: Jiaoyangsu
 ---
@@ -37,8 +37,9 @@ author: Jiaoyangsu
 
 ## 认证与错误恢复
 
-- 连接依赖用户在安装时填写的**访问令牌**（`Authorization: Bearer`）。若调用返回 `401`，说明令牌缺失或失效，提示用户在连接器设置中重新填写。
-- 单次调用应在 30 秒内返回；超时或返回 `5xx` 时，说明是服务端临时不可用，建议稍后重试，不要重复发起相同写操作（本连接器无写操作）。
+- 本连接器采用 **MCP 原生 OAuth（公共客户端 + PKCE）**：首次连接会自动打开浏览器完成授权，用户无需手动填写令牌。
+- 若调用返回 `401`：多为授权过期。access_token 约 1 小时、refresh_token 不少于 30 天，客户端会自动续期并重试；仍失败时提示用户在连接器设置中重新授权。
+- 单次调用应在 30 秒内返回；超时（服务端 30s 硬上限）或返回 `5xx` 时，说明服务端临时不可用或查询范围过大，建议缩小范围后重试，不要重复发起相同调用（本连接器无写操作）。
 - 参数错误会返回可读的失败信息（如“未找到员工：XXX”），据此修正参数后重试，不要臆造参数值。
 
 ## 输出要求

@@ -3,9 +3,6 @@
     "enterprise-knowledge-assistant": {
       "type": "streamableHttp",
       "url": "https://YOUR_DOMAIN/mcp",
-      "headers": {
-        "Authorization": "Bearer ${MCP_TOKEN}"
-      },
       "timeout": 30000,
       "disabledTools": [
         "create_leave_request",

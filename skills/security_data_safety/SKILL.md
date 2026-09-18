@@ -1,20 +1,13 @@
 ---
-name: security_data_safety
-slug: security-data-safety
-displayName: 数据脱敏与敏感词审查
+name: security-data-safety
+display_name: 数据脱敏与敏感词审查
+display_name_en: PII Redaction & Sensitive-Word Review
+description: 对文本中的手机号/身份证/邮箱/银行卡/统一社会信用代码脱敏，并审查高危敏感词（词表可自定义），输出是否可入库的合规结论。
+description_zh: 对任意文本执行 PII 脱敏与高危敏感词审查，输出是否可入库的合规结论。
+description_en: Redact PII and review high-risk sensitive words in any text, returning a storage-readiness verdict.
+category: 11-SecurityCompliance
 version: 1.0.0
-summary: 对文本中的手机号/身份证/邮箱/银行卡/统一社会信用代码脱敏，并检查高危敏感词（词表可自定义），输出是否可入库的合规结论。
-description: |
-  通用数据合规技能：对任意文本执行 PII 脱敏（手机号、身份证、邮箱、银行卡、统一社会信用代码）和高危敏感词风险审查（默认词表：竞品/泄密/薪资倒挂/跳槽/机密/内幕/裁员/股票期权，可通过 words 参数自定义覆盖）。无外部网络依赖、纯标准库实现，可在云沙箱内直接运行。
-  适用于员工数据处理、日志/数据库入库前清洗、内容合规审查等场景。
-tags:
-  - 脱敏
-  - 敏感词
-  - 合规
-  - PII
-  - privacy
-license: MIT
-homepage: https://example.com/security-data-safety
+author: Jiaoyangsu
 ---
 
 # security-data-safety

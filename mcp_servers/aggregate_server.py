@@ -27,4 +27,4 @@ for _sub in (docs_server.mcp, ops_server.mcp, security_server.mcp):
 if __name__ == "__main__":
     from connector import run
 
-    run(mcp, port=8000)
+    run(mcp, port=8000, oauth=True)

@@ -74,9 +74,10 @@ ollama pull bge-m3
 
 各 MCP Server 已是 streamable-http，满足 WorkBuddy 连接器接入方式；生产化开关见 `mcp_servers/connector.py`：
 
-- `CONNECTOR_CLIENT_SECRET`：设置后所有请求必须携带 `Authorization: Bearer <secret>`（client_secret 鉴权）；未设置=本地开发（仅监听 `127.0.0.1`，不鉴权）。
+- `CONNECTOR_PUBLIC_URL`：对外 HTTPS 根地址，设置后聚合端点（8000）启用 **MCP 原生 OAuth 2.1（公共客户端 + PKCE）**，端点/元数据见 `mcp_servers/oauth_server.py`，状态落盘 `data/oauth_state.json`（0600，重启不掉线）。
+- `CONNECTOR_CLIENT_SECRET`：OAuth 未启用时的**静态 Bearer 兜底**（仅供内网联调）；都未设置=本地开发（仅监听 `127.0.0.1`，不鉴权）。
 - `CONNECTOR_TLS_CERT` / `CONNECTOR_TLS_KEY`：同时设置则启用 HTTPS。
-- 平台要求单次工具调用 <30s（当前均为内存/检索类，天然满足）。
+- `CONNECTOR_MAX_CALL_SECONDS`：工具调用**硬上限**（默认 30s，`mcp_servers/tool_timeout.py` 在协议层强制），满足平台「单次 <30s」。
 
 ## 许可
 

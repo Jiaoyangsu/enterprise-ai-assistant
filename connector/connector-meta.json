@@ -9,7 +9,6 @@
   "type": "mcp",
   "version": "1.0.0",
   "minWorkbuddyVersion": "4.24.0",
-  "auth_mode": "token",
   "examples_zh": [
     "公司的年假制度是怎么规定的？",
     "技术中心还剩多少部门预算？",

@@ -20,11 +20,12 @@
 - **跨机访问 dsh 8787**：dsh 明确禁止 `--host 0.0.0.0`（会暴露 RCE），只能本机绑定；他机测试用 SSH 隧道 `ssh -L 8787:127.0.0.1:8787 <user>@<Mac IP>` 再开 token 链接（token 取自 `/tmp/dsh-web.log`，每次重启变化）。跨机直连/反代场景需把权威名加入 `--trusted-host`，否则 `/api` 被 browser-trust fence 拦。
 - **自研 8788 跨机**：`WEB_HOST=0.0.0.0 .venv/bin/python agent/web_app.py 8788`（默认仍绑 `127.0.0.1`，登录 fail-closed）。
 - guard 语法/单测：`node --check ~/.dsh/profiles/web/node_modules/guard/index.js && node ~/.dsh/profiles/web/node_modules/guard/test.js`
-- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）、`tests/test_baseline.py`（22）、`tests/test_golden.py`（16）、`tests/test_context.py`（13）、`tests/test_entities.py`（18）、`tests/test_store.py`（20）、`tests/test_retrieval.py`（16）、`tests/test_web_page.py`（内嵌 JS 语法 3）
+- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）、`tests/test_baseline.py`（22）、`tests/test_golden.py`（16）、`tests/test_context.py`（13）、`tests/test_entities.py`（18）、`tests/test_store.py`（20）、`tests/test_retrieval.py`（16）、`tests/test_oauth.py`（28）、`tests/test_web_page.py`（内嵌 JS 语法 3）
 - **页面内嵌 JS 陷阱**：`agent/web_app.py` 的三引号页面字符串里写 JS 的 `\n` 会被 Python 解释成真实换行、截断 JS 字符串 → 整段脚本 SyntaxError、按钮点了没反应。`tests/test_web_page.py` 用 `node --check` 兜这个；写页面 JS 时换行用空格或改 `\\n`。
 - 检索索引：`ollama pull bge-m3`（一次性；离线可跳过，检索自动回退关键词）
 - 账号口令管理：`.venv/bin/python tools/set_password.py <姓名> '<口令>'`（或 `--list` / `--remove`）；账号表 `data/auth_users.json`（fail-closed，无通配/默认口令），生产用 `AUTH_USERS` 环境变量注入
-- Connector 生产化（`mcp_servers/connector.py`）：`CONNECTOR_CLIENT_SECRET` 启用 Bearer 鉴权，`CONNECTOR_TLS_CERT`/`CONNECTOR_TLS_KEY` 启用 HTTPS；未设置 secret 时为本地 dev（127.0.0.1 不鉴权）
+- Connector 生产化（`mcp_servers/connector.py`）：`CONNECTOR_PUBLIC_URL` 启用 MCP 原生 OAuth（端点见 `oauth_server.py`），`CONNECTOR_CLIENT_SECRET` 为静态 Bearer 兜底，`CONNECTOR_TLS_CERT`/`CONNECTOR_TLS_KEY` 启用 HTTPS，`CONNECTOR_MAX_CALL_SECONDS`（默认 30）为工具硬超时（`tool_timeout.py`）
+- OAuth 本地联调：`cd mcp_servers && CONNECTOR_PUBLIC_URL=http://127.0.0.1:8000 CONNECTOR_HOST=127.0.0.1 CONNECTOR_OAUTH_STATE=/tmp/oauth_state.json ../.venv/bin/python aggregate_server.py`；`curl 127.0.0.1:8000/.well-known/oauth-protected-resource`（无 Token 调 `/mcp` 应 401 + `WWW-Authenticate`）。全流程回归 `tests/test_oauth.py`
 - 日志：`/tmp/dsh-web.log`、`/tmp/guard_feedback.jsonl`（guard 拦截记录）
 - 数据飞轮升级为常驻守护进程（自动采集→候选→标注发现→回灌评测→落库知识库→回归）：
   `nohup .venv/bin/python -u tools/flywheel/daemon.py --judge llm > /tmp/flywheel_daemon.log 2>&1 &`
@@ -61,7 +62,7 @@
 ## 上架安全基线（WorkBuddy 连接器）
 
 - **认证 fail-closed**：`agent/secure_auth.py` 集中口令校验（PBKDF2-HMAC-SHA256）；账号表无 `*` 通配、无隐式默认口令，未登记账号一律拒绝。生产用 `AUTH_USERS` 环境变量注入，口令/证书永不入库（`.gitignore` 覆盖 `data/auth_users.json`、`.env`、`*.pem`、`*.key`）。
-- **连接器生产化**：`mcp_servers/connector.py` 统一启动，`CONNECTOR_CLIENT_SECRET` → Bearer 鉴权，`CONNECTOR_TLS_CERT/KEY` → HTTPS；满足平台「HTTPS + streamableHttp + client_secret + 单次<30s」。
+- **连接器生产化**：`mcp_servers/connector.py` 统一启动，`CONNECTOR_PUBLIC_URL` → **MCP 原生 OAuth 2.1（公共客户端 + PKCE，`auth_mode` 省略）**，`CONNECTOR_CLIENT_SECRET` → 静态 Bearer 兜底，`CONNECTOR_TLS_CERT/KEY` → HTTPS；`tool_timeout.py` 在协议层强制 30s 硬上限；满足平台「HTTPS + streamableHttp + OAuth/最小权限 + 单次<30s」。
 - **PII 脱敏**：`security_server.redact_pii` 覆盖手机/身份证/邮箱/银行卡/地址/内部人名，敏感词表与内部人名表均由 `data/config.json` 配置。
 - **日志脱敏**：`agent/audit.py` 的 `args`/`result` 写入前复用 `security_server.redact_pii`（`_scrub`，失败降级为仅截断）；防止用户把待脱敏 PII 作为参数传入时反被明文落盘。
 - **合规材料**：`docs/合规与数据说明.md`（数据驻留 / 日志与审计 / 隐私政策占位 / 凭证处理）、`docs/上架类目与资质.md`（类目选择 + 资质与提交材料清单）。改动数据/日志/鉴权行为须同步这两份文档。
@@ -70,9 +71,10 @@
 ## WorkBuddy 连接器提交包（`connector/`）
 
 - **一个连接器只能绑一个 MCP Server**（平台硬约束）。因此新增 `mcp_servers/aggregate_server.py`：用 `FastMCP.mount`（`namespace=None` 保留原名）把 docs/ops/security 合并为单端点 **8000**，对外 12 个工具。改子 server 即聚合端点同步生效。
-- 提交包结构：`connector/{connector-meta.json, mcp.json, token-schema.json, icon.svg, skills/<name>/SKILL.md, README.md}`。
-- **`minWorkbuddyVersion` 取所用特性最高版本**：`disabledTools`=4.22.15、`auth_mode: token`+token-schema=4.23.0、`name_zh/en`+`examples_zh/en`=**4.24.0** → 声明 `"4.24.0"`（易错点：不要只写 4.23.0）。
-- **对外只读**：`mcp.json` 的 `disabledTools` 隐藏 `create_leave_request`/`create_ticket`（写操作未持久化）与 `get_customer_info`/`list_customers`（权限依赖模型传入的 `user_role`，Token 模式不可信）。
-- **鉴权**：`auth_mode: token`，`${MCP_TOKEN}`（mcp.json）↔ `token-schema.json` 的 `fields[].key` 大小写必须一致；服务端 `CONNECTOR_CLIENT_SECRET` 对应此令牌。
-- 本地联调：`cd mcp_servers && CONNECTOR_CLIENT_SECRET=... ../.venv/bin/python aggregate_server.py`；校验 `curl -o /dev/null -w '%{http_code}' 127.0.0.1:8000/mcp`（无 token 应 401）。
-- 提交阻塞项见 `connector/README.md`：公网 HTTPS 域名、`SKILL.md` 的 `category` 白名单核对、令牌签发流程。
+- 提交包结构：`connector/{connector-meta.json, mcp.json, icon.svg, icon.png, skills/<name>/SKILL.md, README.md}`。
+- **`minWorkbuddyVersion` 取所用特性最高版本**：`disabledTools`=4.22.15、`name_zh/en`+`examples_zh/en`=**4.24.0** → 声明 `"4.24.0"`（OAuth 为「基础」，不加版本）。
+- **对外只读**：`mcp.json` 的 `disabledTools` 隐藏 `create_leave_request`/`create_ticket`（写操作未持久化）与 `get_customer_info`/`list_customers`（权限依赖模型传入的 `user_role`，无用户会话时不可信）。
+- **鉴权（MCP 原生 OAuth）**：`connector-meta.json` **省略 `auth_mode`**，`mcp.json` **不含任何凭证头**；服务端端点/元数据见 `mcp_servers/oauth_server.py`（`/oauth/register|authorize|token` 别名 + 裸 PRM + 401 `WWW-Authenticate`）。官方规定同一服务若同时提供 OAuth 与 Token，须拆成两个 `source`。
+- **Skill `category`**：官方《技能》文档未公布枚举，当前取官方《专家》`categoryId` 值 `04-DataAI`（另见 `skills/security_data_safety` 的 `11-SecurityCompliance`）。
+- 本地联调：见「常用命令」的 OAuth 联调行；校验裸 PRM 200、无 Token `/mcp` 401（带 `WWW-Authenticate`）、`tests/test_oauth.py` 28/28。
+- 提交阻塞项见 `connector/README.md`：公网 HTTPS 域名、`category` 白名单核对、`data/oauth_state.json` 线上持久化策略。
