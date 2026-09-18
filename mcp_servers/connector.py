@@ -33,6 +33,7 @@ import uvicorn
 from fastmcp.server.auth import AccessToken, TokenVerifier
 
 from oauth_server import BearerChallengeMiddleware, build_oauth_provider, public_url
+from public_app import PublicInfoMiddleware
 from tool_timeout import ToolTimeoutMiddleware
 
 
@@ -66,6 +67,10 @@ def _max_call_seconds() -> float:
 def run(mcp, port: int, name: str | None = None, oauth: bool = False) -> None:
     """按环境变量装配鉴权/TLS/超时并启动 streamable-http 服务。"""
     name = name or getattr(mcp, "name", "mcp")
+    try:
+        port = int(os.environ.get("CONNECTOR_PORT") or port)
+    except ValueError:
+        pass
     seconds = _max_call_seconds()
     mcp.add_middleware(ToolTimeoutMiddleware(seconds))
 
@@ -84,17 +89,12 @@ def run(mcp, port: int, name: str | None = None, oauth: bool = False) -> None:
         mcp.auth = auth
 
     mode = "oauth(pkce)" if provider else ("client_secret" if auth else "off(dev)")
+    os.environ["CONNECTOR_AUTH_MODE"] = mode
     print(f"[connector:{name}] {scheme}://{host}:{port} | "
-          f"鉴权={mode} | 工具调用硬超时 {seconds:g}s")
+          f"鉴权={mode} | 工具调用硬超时 {seconds:g}s | 公开端点 /healthz /privacy")
 
+    app = mcp.http_app(transport="streamable-http")
     if provider is not None:
-        base_app = mcp.http_app(transport="streamable-http")
-        resource_url = f"{public_url()}/.well-known/oauth-protected-resource"
-        app = BearerChallengeMiddleware(base_app, resource_url)
-        uvicorn.run(app, host=host, port=port, ssl_certfile=cert, ssl_keyfile=key)
-        return
-
-    kwargs: dict = {"transport": "streamable-http", "host": host, "port": port}
-    if cert and key:
-        kwargs["uvicorn_config"] = {"ssl_certfile": cert, "ssl_keyfile": key}
-    mcp.run(**kwargs)
+        app = BearerChallengeMiddleware(app, f"{public_url()}/.well-known/oauth-protected-resource")
+    app = PublicInfoMiddleware(app, service=name)
+    uvicorn.run(app, host=host, port=port, ssl_certfile=cert, ssl_keyfile=key)

@@ -76,8 +76,10 @@ ollama pull bge-m3
 
 - `CONNECTOR_PUBLIC_URL`：对外 HTTPS 根地址，设置后聚合端点（8000）启用 **MCP 原生 OAuth 2.1（公共客户端 + PKCE）**，端点/元数据见 `mcp_servers/oauth_server.py`，状态落盘 `data/oauth_state.json`（0600，重启不掉线）。
 - `CONNECTOR_CLIENT_SECRET`：OAuth 未启用时的**静态 Bearer 兜底**（仅供内网联调）；都未设置=本地开发（仅监听 `127.0.0.1`，不鉴权）。
-- `CONNECTOR_TLS_CERT` / `CONNECTOR_TLS_KEY`：同时设置则启用 HTTPS。
+- `CONNECTOR_TLS_CERT` / `CONNECTOR_TLS_KEY`：同时设置则启用 HTTPS；`CONNECTOR_PORT` 覆盖监听端口（默认 8000）。
 - `CONNECTOR_MAX_CALL_SECONDS`：工具调用**硬上限**（默认 30s，`mcp_servers/tool_timeout.py` 在协议层强制），满足平台「单次 <30s」。
+- 同一 HTTPS 源另提供公开端点：`/healthz`（可用性探针）与 `/privacy`（隐私政策页，`CONNECTOR_PRIVACY_FILE` 可用法务终稿覆盖），由 `mcp_servers/public_app.py` 提供。
+- 启动：`CONNECTOR_PUBLIC_URL=https://<域名> ./start_connector.sh`；完整部署（反代/证书/systemd/多实例/监控/真机验收）见 [`docs/部署与上线.md`](docs/部署与上线.md)。
 
 ## 许可
 

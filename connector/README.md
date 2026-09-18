@@ -28,12 +28,15 @@ docs(8001) + ops(8002) + security(8003)  -->  aggregate_server.py (8000)  -->  /
 启动（生产需公网 HTTPS）：
 
 ```bash
-cd mcp_servers
 export CONNECTOR_PUBLIC_URL='https://kb.example.com'   # 对外 HTTPS 根地址 → 启用 MCP 原生 OAuth
-export CONNECTOR_TLS_CERT=/path/fullchain.pem          # 若用反代终止 TLS 可省略
-export CONNECTOR_TLS_KEY=/path/privkey.pem
-../.venv/bin/python aggregate_server.py
+export CONNECTOR_OPERATOR='XX 科技有限公司'             # 隐私页运营主体
+export CONNECTOR_PRIVACY_CONTACT=privacy@example.com   # 隐私页联系邮箱
+export AUDIT_FILE=/var/log/kbai/audit.jsonl            # 审计受管目录（0600 + 轮转）
+./start_connector.sh                                   # CONNECTOR_PORT 默认 8000
 ```
+
+> 完整部署（反向代理、证书、systemd、多实例与监控）见仓库根目录 `docs/部署与上线.md`。
+> 同一 HTTPS 源除 `/mcp` 外还提供 `/healthz`（探针）与 `/privacy`（隐私政策页）。
 
 - 设置 `CONNECTOR_PUBLIC_URL` = **MCP 原生 OAuth** 模式（推荐，`auth_mode` 省略）。
 - 未设置 `CONNECTOR_PUBLIC_URL` 但设置了 `CONNECTOR_CLIENT_SECRET` = 静态 Bearer（仅供内网联调）。
@@ -57,7 +60,7 @@ export CONNECTOR_TLS_KEY=/path/privkey.pem
   与回退 `http://127.0.0.1:{动态端口}/oauth/callback`（`oauth_server._redirect_allowed` 白名单）。
 - access_token ≈1h、refresh_token ≥30d、授权码一次性 ≈10min，与官方建议一致。
 - 未带 Token 的请求返回 `401` 且附 `WWW-Authenticate: Bearer resource_metadata=...`（RFC 9728 发现入口）。
-- 动态注册的客户端与令牌持久化到 `data/oauth_state.json`（0600，已 gitignore），进程重启不掉线。
+- 动态注册的客户端与令牌持久化到 `data/oauth_state.json`（`CONNECTOR_OAUTH_STATE` 可改，0600，已 gitignore），进程重启不掉线；**多实例须置于共享存储**（见 `docs/部署与上线.md` §5）。
 
 > 若目标客户只支持自填 Token，请按官方要求**另起一个 `source`** 提交独立的 token 连接器
 > （同一服务不得在同一连接器中同时提供 OAuth 与 Token）。
@@ -109,13 +112,15 @@ LLM 链路最坏延迟曾超过 30s，该硬上限即为其兜底。
 - [x] Skill 覆盖工具用途、参数、示例、认证前置与错误恢复
 - [x] 已隐藏写工具与不可信授权工具（最小权限）
 - [x] 单次调用 30s 硬上限
+- [x] 同源提供 `/healthz` 探针与 `/privacy` 隐私页（无需另建站点）
 
 ## 提交前仍需完成（阻塞项）
 
-1. **公网 HTTPS 端点**：把 `aggregate_server.py` 部署到可公网访问的 HTTPS 地址
-   （反代 + 证书），然后替换 `mcp.json` 的 `url` 中的 `YOUR_DOMAIN`。平台建议可用性 ≥ 99.9%。
-2. **OAuth 令牌策略**：确认线上 `data/oauth_state.json` 的持久化与备份策略（否则重启后需重新授权）。
-3. **Skill `category`**：当前填 `04-DataAI`（官方《专家》`categoryId` 枚举，数据智能含知识管理/AI 应用）；
+1. **公网 HTTPS 端点**：按 `docs/部署与上线.md` 部署（反代 + 证书 + systemd），
+   然后替换 `mcp.json` 的 `url` 中的 `YOUR_DOMAIN`。平台建议可用性 ≥ 99.9%（探针 `/healthz` + 拨测）。
+2. **OAuth 令牌策略**：`CONNECTOR_OAUTH_STATE` 指向持久盘并纳入备份（多实例须共享存储，见部署文档 §5）。
+3. **隐私页终稿**：用 `CONNECTOR_PRIVACY_FILE` 覆盖默认模板，并替换 `CONNECTOR_OPERATOR` / `CONNECTOR_PRIVACY_CONTACT`。
+4. **Skill `category`**：当前填 `04-DataAI`（官方《专家》`categoryId` 枚举，数据智能含知识管理/AI 应用）；
    因官方《技能》文档未公布独立枚举，提交前建议与运营再次确认。
 
 ## 合规材料（随包提交审核）

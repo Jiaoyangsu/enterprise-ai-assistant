@@ -16,6 +16,9 @@ $PY mcp_servers/security_server.py &
 sleep 2
 echo "Starting memory server (8004)..."
 $PY mcp_servers/memory_server.py &
+sleep 2
+echo "Starting aggregate/connector server (8000)..."
+$PY mcp_servers/aggregate_server.py &
 
-echo "All MCP servers started. Press Ctrl+C to stop all."
+echo "All MCP servers started (incl. connector 8000). Press Ctrl+C to stop all."
 wait

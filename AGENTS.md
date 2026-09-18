@@ -20,7 +20,8 @@
 - **跨机访问 dsh 8787**：dsh 明确禁止 `--host 0.0.0.0`（会暴露 RCE），只能本机绑定；他机测试用 SSH 隧道 `ssh -L 8787:127.0.0.1:8787 <user>@<Mac IP>` 再开 token 链接（token 取自 `/tmp/dsh-web.log`，每次重启变化）。跨机直连/反代场景需把权威名加入 `--trusted-host`，否则 `/api` 被 browser-trust fence 拦。
 - **自研 8788 跨机**：`WEB_HOST=0.0.0.0 .venv/bin/python agent/web_app.py 8788`（默认仍绑 `127.0.0.1`，登录 fail-closed）。
 - guard 语法/单测：`node --check ~/.dsh/profiles/web/node_modules/guard/index.js && node ~/.dsh/profiles/web/node_modules/guard/test.js`
-- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）、`tests/test_baseline.py`（22）、`tests/test_golden.py`（16）、`tests/test_context.py`（13）、`tests/test_entities.py`（18）、`tests/test_store.py`（20）、`tests/test_retrieval.py`（16）、`tests/test_oauth.py`（28）、`tests/test_web_page.py`（内嵌 JS 语法 3）
+- 自研回归：`.venv/bin/python tests/test_verifier.py`（27）、`tests/run_suite.py`（45）、`tests/test_baseline.py`（22）、`tests/test_golden.py`（16）、`tests/test_context.py`（13）、`tests/test_entities.py`（18）、`tests/test_store.py`（20）、`tests/test_retrieval.py`（16）、`tests/test_oauth.py`（28）、`tests/test_audit.py`（12）、`tests/test_public_app.py`（10）、`tests/test_web_page.py`（内嵌 JS 语法 3）
+- 连接器/审计脚本：`./start_connector.sh`（对外 8000：OAuth + `/healthz` + `/privacy`，读 `CONNECTOR_PUBLIC_URL`/`CONNECTOR_PORT`/`AUDIT_FILE`）、`check_servers.sh`（含 8000）、`docs/部署与上线.md`（反代/systemd/多实例/监控/真机验收清单）
 - **页面内嵌 JS 陷阱**：`agent/web_app.py` 的三引号页面字符串里写 JS 的 `\n` 会被 Python 解释成真实换行、截断 JS 字符串 → 整段脚本 SyntaxError、按钮点了没反应。`tests/test_web_page.py` 用 `node --check` 兜这个；写页面 JS 时换行用空格或改 `\\n`。
 - 检索索引：`ollama pull bge-m3`（一次性；离线可跳过，检索自动回退关键词）
 - 账号口令管理：`.venv/bin/python tools/set_password.py <姓名> '<口令>'`（或 `--list` / `--remove`）；账号表 `data/auth_users.json`（fail-closed，无通配/默认口令），生产用 `AUTH_USERS` 环境变量注入
@@ -62,10 +63,11 @@
 ## 上架安全基线（WorkBuddy 连接器）
 
 - **认证 fail-closed**：`agent/secure_auth.py` 集中口令校验（PBKDF2-HMAC-SHA256）；账号表无 `*` 通配、无隐式默认口令，未登记账号一律拒绝。生产用 `AUTH_USERS` 环境变量注入，口令/证书永不入库（`.gitignore` 覆盖 `data/auth_users.json`、`.env`、`*.pem`、`*.key`）。
-- **连接器生产化**：`mcp_servers/connector.py` 统一启动，`CONNECTOR_PUBLIC_URL` → **MCP 原生 OAuth 2.1（公共客户端 + PKCE，`auth_mode` 省略）**，`CONNECTOR_CLIENT_SECRET` → 静态 Bearer 兜底，`CONNECTOR_TLS_CERT/KEY` → HTTPS；`tool_timeout.py` 在协议层强制 30s 硬上限；满足平台「HTTPS + streamableHttp + OAuth/最小权限 + 单次<30s」。
+- **连接器生产化**：`mcp_servers/connector.py` 统一启动，`CONNECTOR_PUBLIC_URL` → **MCP 原生 OAuth 2.1（公共客户端 + PKCE，`auth_mode` 省略）**，`CONNECTOR_CLIENT_SECRET` → 静态 Bearer 兜底，`CONNECTOR_TLS_CERT/KEY` → HTTPS，`CONNECTOR_PORT` → 覆盖端口；`tool_timeout.py` 在协议层强制 30s 硬上限；`public_app.py` 在同一源提供 `/healthz`（探针）与 `/privacy`（隐私页，`CONNECTOR_PRIVACY_FILE` 可覆盖），满足平台「HTTPS + streamableHttp + OAuth/最小权限 + 单次<30s」。
 - **PII 脱敏**：`security_server.redact_pii` 覆盖手机/身份证/邮箱/银行卡/地址/内部人名，敏感词表与内部人名表均由 `data/config.json` 配置。
 - **日志脱敏**：`agent/audit.py` 的 `args`/`result` 写入前复用 `security_server.redact_pii`（`_scrub`，失败降级为仅截断）；防止用户把待脱敏 PII 作为参数传入时反被明文落盘。
-- **合规材料**：`docs/合规与数据说明.md`（数据驻留 / 日志与审计 / 隐私政策占位 / 凭证处理）、`docs/上架类目与资质.md`（类目选择 + 资质与提交材料清单）。改动数据/日志/鉴权行为须同步这两份文档。
+- **审计落管**：`AUDIT_FILE` 指向受管目录（生产 `/var/log/kbai/audit.jsonl`），新建即 `0600`、按 `AUDIT_MAX_BYTES`（默认 5 MiB）轮转、保留 `AUDIT_BACKUPS`（默认 3）份；`tests/test_audit.py` 覆盖。
+- **合规材料**：`docs/合规与数据说明.md`（数据驻留 / 日志与审计 / 隐私页 `/privacy` / 凭证处理）、`docs/上架类目与资质.md`（类目选择 + 资质与提交材料清单）、`docs/部署与上线.md`（部署 / 可用性 / 多实例 / 真机验收）。改动数据/日志/鉴权/部署行为须同步这些文档。
 - **LICENSE**：Apache-2.0（无协议不能上架）。
 
 ## WorkBuddy 连接器提交包（`connector/`）
@@ -77,4 +79,5 @@
 - **鉴权（MCP 原生 OAuth）**：`connector-meta.json` **省略 `auth_mode`**，`mcp.json` **不含任何凭证头**；服务端端点/元数据见 `mcp_servers/oauth_server.py`（`/oauth/register|authorize|token` 别名 + 裸 PRM + 401 `WWW-Authenticate`）。官方规定同一服务若同时提供 OAuth 与 Token，须拆成两个 `source`。
 - **Skill `category`**：官方《技能》文档未公布枚举，当前取官方《专家》`categoryId` 值 `04-DataAI`（另见 `skills/security_data_safety` 的 `11-SecurityCompliance`）。
 - 本地联调：见「常用命令」的 OAuth 联调行；校验裸 PRM 200、无 Token `/mcp` 401（带 `WWW-Authenticate`）、`tests/test_oauth.py` 28/28。
-- 提交阻塞项见 `connector/README.md`：公网 HTTPS 域名、`category` 白名单核对、`data/oauth_state.json` 线上持久化策略。
+- 部署与上线手册：`docs/部署与上线.md`（反向代理 TLS/SSE 不缓冲、systemd、`CONNECTOR_OAUTH_STATE` 持久化与多实例共享存储、`/healthz` 拨测告警、审计受管目录、隐私页终稿、真机验收清单）。公开端点 `/healthz` `/privacy` 由 `mcp_servers/public_app.py` 提供（`tests/test_public_app.py` 10 条）。
+- 提交阻塞项见 `connector/README.md`：公网 HTTPS 域名+证书、隐私页终稿占位替换、`CONNECTOR_OAUTH_STATE` 线上持久化/多实例共享、`category` 白名单核对、企业主体资质。
