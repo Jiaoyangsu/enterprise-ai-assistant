@@ -20,5 +20,8 @@ data/oauth_state.json.tmp
 *.pem
 *.key
 
+# 备份产物（含 secret.key/oauth_state 等敏感副本）
+backups/
+
 # 运行时审计/反馈 JSONL（业务快照留 /tmp，不入库）
 /tmp/**

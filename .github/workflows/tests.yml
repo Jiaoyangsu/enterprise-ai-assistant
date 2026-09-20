@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python deps（按本地锁定版本，保证 API 一致）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt "fastmcp==4.0.3" "mcp==2.1.1"
+
+      - name: 全量回归（Python 测试 + guard 双侧）
+        run: PY=python ./tools/run_all_tests.sh

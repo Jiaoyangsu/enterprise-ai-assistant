@@ -29,6 +29,12 @@ class TestResults:
 
 
 def main():
+    import os
+    import tempfile
+    # 用独立临时库跑（写操作不污染线上 data/app.db，且每次回归确定性一致）
+    os.environ["APP_DB_FILE"] = os.path.join(tempfile.mkdtemp(prefix="baseline_"), "app.db")
+    import store
+    store.init_db()
     t = TestResults()
     ops = load_server("ops", ROOT / "mcp_servers/ops_server.py")
     docs = load_server("docs", ROOT / "mcp_servers/docs_server.py")

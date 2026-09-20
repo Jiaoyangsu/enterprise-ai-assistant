@@ -79,7 +79,7 @@ ollama pull bge-m3
 - `CONNECTOR_TLS_CERT` / `CONNECTOR_TLS_KEY`：同时设置则启用 HTTPS；`CONNECTOR_PORT` 覆盖监听端口（默认 8000）。
 - `CONNECTOR_MAX_CALL_SECONDS`：工具调用**硬上限**（默认 30s，`mcp_servers/tool_timeout.py` 在协议层强制），满足平台「单次 <30s」。
 - 同一 HTTPS 源另提供公开端点：`/healthz`（可用性探针）与 `/privacy`（隐私政策页，`CONNECTOR_PRIVACY_FILE` 可用法务终稿覆盖），由 `mcp_servers/public_app.py` 提供。
-- 启动：`CONNECTOR_PUBLIC_URL=https://<域名> ./start_connector.sh`；完整部署（反代/证书/systemd/多实例/监控/真机验收）见 [`docs/部署与上线.md`](docs/部署与上线.md)。
+- 启动：`CONNECTOR_PUBLIC_URL=https://<域名> ./start_connector.sh`；完整部署（反代/证书/systemd/多实例/监控/真机验收）见 [`docs/部署与上线.md`](docs/部署与上线.md)，`deploy/` 提供现成的 systemd 单元与环境变量模板，备份/恢复与数据接入分别见 `docs/备份与恢复.md`、`docs/数据接入.md`。
 
 ## 许可
 
@@ -87,10 +87,19 @@ Apache-2.0，见 [LICENSE](LICENSE)。
 
 ## 业务数据
 
-`mcp_servers/data.py`（在职员工目录、预算、客户、合同、部门）+ `mcp_servers/documents.py` / `documents_extra.py`（27 篇制度/实操文档，含密级 RBAC）。员工目录会随 `generate_data.py` 生成扩展。
+`mcp_servers/data.py`（在职员工目录、预算、客户、合同、部门）+ `mcp_servers/documents.py` / `documents_extra.py`（27 篇制度/实操文档，含密级 RBAC）。员工目录会随 `generate_data.py` 生成扩展；默认是合成演示数据，上线换客户真实数据用
+`tools/import_customer_data.py`（CSV→SQLite/documents.json，见 [`docs/数据接入.md`](docs/数据接入.md)）。
+
+## 运维工具
+
+- `tools/backup.sh` — `data/` 一致性快照 + 保留轮转（恢复见 [`docs/备份与恢复.md`](docs/备份与恢复.md)）
+- `deploy/` — systemd 单元 + `connector.env.example` + 无 systemd 的 `watchdog.sh` 兜底
+- `tools/run_all_tests.sh` + `.github/workflows/tests.yml` — 一键全量回归 / CI
 
 ## 文档
 
 - [使用指南](docs/使用指南.md) — 面向使用者与运维：登录、提问边界、工作流用法、坐席页、后端切换
 - [测试文档](docs/测试文档.md) — 自动化测试 / 冒烟 / 端到端验证 / 飞轮 eval 与 bench 流程
+- [数据接入](docs/数据接入.md) — 真实数据替换合成数据（上线第一天）
+- [备份与恢复](docs/备份与恢复.md) — 一致性快照、恢复演练、恢复注意事项
 - [变更日志](CHANGELOG.md)

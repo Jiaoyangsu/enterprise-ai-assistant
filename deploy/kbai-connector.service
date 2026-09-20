@@ -1,0 +1,30 @@
+# systemd 单元：WorkBuddy 连接器（8000 聚合端点）
+# 使用：
+#   sudo mkdir -p /etc/kbai && sudo install -m 600 deploy/connector.env.example /etc/kbai/connector.env
+#   # 编辑 /etc/kbai/connector.env 填入真实值（CONNECTOR_PUBLIC_URL、运营主体、审计路径等）
+#   sudo install -m 644 deploy/kbai-connector.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now kbai-connector
+# 详情见 docs/部署与上线.md
+[Unit]
+Description=Enterprise Knowledge Assistant Connector (WorkBuddy MCP + OAuth)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kbai
+Group=kbai
+WorkingDirectory=/opt/kbai/enterprise-ai-assistant
+EnvironmentFile=/etc/kbai/connector.env
+ExecStart=/opt/kbai/enterprise-ai-assistant/start_connector.sh
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/kbai /opt/kbai/enterprise-ai-assistant/data /opt/kbai/enterprise-ai-assistant/backups
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
