@@ -400,10 +400,36 @@ function apply(ctx, config = {}) {
     ctx.on('agent/created', ({ agent }) => restrictAgent(agent));
   }
 
-  ctx.on('agent/turn-stopping', ({ agent }) => {
+  // ===== 逐轮/逐步延迟可观测（对齐自研侧 trace 的 ts/llm_dur/tool_dur 语义）=====
+  // 每步 pre-step 打一次时间戳，turn-stopping 时汇总该轮墙钟与逐步耗时，写 perf 反馈。
+  const perfState = new WeakMap();
+  ctx.on('agent/pre-step', ({ agent, turn }) => {
+    const now = Date.now();
+    let tm = perfState.get(agent);
+    if (!tm) { tm = {}; perfState.set(agent, tm); }
+    if (!tm[turn]) tm[turn] = { start: now, stepStart: now, stepMs: [], steps: 0 };
+    else { if (tm[turn].stepStart) tm[turn].stepMs.push(now - tm[turn].stepStart); tm[turn].stepStart = now; }
+    tm[turn].steps += 1;
+  });
+
+  ctx.on('agent/turn-stopping', ({ agent, turn }) => {
     const msgs = agent.session.deriveMessages();
     const last = lastProcessedUser(msgs);
     const q = last.text;
+    try {
+      const tm = perfState.get(agent);
+      const t = tm && tm[turn];
+      if (t && q) {
+        if (t.stepStart) t.stepMs.push(Date.now() - t.stepStart);
+        logFeedback({
+          type: 'perf',
+          question: q.slice(0, 200),
+          turnMs: Date.now() - t.start,
+          steps: t.steps,
+          stepMs: t.stepMs,
+        });
+      }
+    } catch (_) {}
     if (!q || !isBusiness(q)) return;
     const tail = msgs.slice(last.idx + 1);
     const usedTool = tail.some((m) => m && Array.isArray(m.content) && m.content.some(isToolResultBlock));

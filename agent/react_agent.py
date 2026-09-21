@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import inspect
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mcp_servers"))
@@ -468,7 +469,9 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
     会触发一次纠正重答（allow_retry=True 时），把幻觉压到最低。
     allow（工具白名单）：默认全部读工具（写工具一律排除）。传更小集合可做到最小暴露——
     模型只能看到/调用白名单内的工具，白名单外调用被 run_tool 拒绝，绝不执行。
-    trace（可选）：传入 list，每次工具调用会追加 {"tool", "args", "obs"}，用于 AB 实验判分，不改行为。
+    trace（可选）：传入 list，每次工具调用追加 {"tool", "args", "obs", "thought", "ts", "llm_dur",
+    "tool_dur"}，最终 answer 步追加 {"step": "answer", "kind", "ts", "llm_dur"}（tool 记为 ""），
+    供延迟归因与 AB 判分，不改行为。
     user_ctx（可选）：登录会话身份 {name, department, user_role}——取代硬编码"刘洋"，用于工具参数与客户信息 RBAC。
     history（可选）：多轮对话历史 [{q, a}, ...]，作为本轮之前的 user/assistant 上下文拼进 messages
     （支持"张三在哪个部门 → 那个部门多少人"类指代；限制最近 8 轮 + 单条截断）。
@@ -530,13 +533,22 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
 
     first_ans: list[str | None] = [None]
 
+    def _trace_answer(kind: str, step_ts: float, llm_dur: float):
+        """给 answer 步追加时间戳（tool 步记 llm_dur，answer 步记最终生成的耗时）。"""
+        if trace is not None:
+            trace.append({"step": "answer", "kind": kind, "tool": "", "obs": "",
+                          "ts": round(step_ts, 3), "llm_dur": llm_dur})
+
     for attempt in range(2):  # 首次 + 回检失败时的纠正重答
         for step in range(1, max_steps + 1):
             if verbose:
                 print(f"    └─[步骤{step}] 推理中...")
+            t0 = time.time()
             raw = chat(model, messages, temperature=0.1, max_tokens=800)
+            llm_dur = round(time.time() - t0, 3)
             action = extract_json_object(raw)
             if "answer" in action:
+                _trace_answer("structured", t0, llm_dur)
                 ans = deliver(str(action["answer"]).strip())
                 if ans is not None:
                     return redact(ans)
@@ -547,9 +559,13 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
                 if verbose:
                     print(f"    └─[{step}] 思考: {action.get('thought','')[:180]}")
                     print(f"    └─[{step}] 调用 {tool} ─ args={json.dumps(args, ensure_ascii=False)[:200]}")
+                t_tool = time.time()
                 obs = run_tool(tool, args, ctx, allow_set)
+                tool_dur = round(time.time() - t_tool, 3)
                 if trace is not None:
-                    trace.append({"tool": tool, "args": dict(args), "obs": obs})
+                    trace.append({"tool": tool, "args": dict(args), "obs": obs,
+                                  "thought": (action.get("thought") or "")[:200],
+                                  "ts": round(t0, 3), "llm_dur": llm_dur, "tool_dur": tool_dur})
                 if verbose:
                     print(f"    └─[{step}] 观测: {obs[:260]}")
                 messages.append({"role": "assistant", "content": raw})
@@ -558,6 +574,7 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
             # JSON 解析失败但明显是答案：用软解析兜底
             ans0 = extract_answer_text(raw)
             if ans0:
+                _trace_answer("soft", t0, llm_dur)
                 ans = deliver(ans0)
                 if ans is not None:
                     if verbose:
@@ -565,6 +582,7 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
                     return redact(ans)
                 break
             # 无工具也无 answer：视为模型直接作答（拒答/说明）
+            _trace_answer("direct", t0, llm_dur)
             ans = deliver(strip_to_natural(raw))
             if ans is not None:
                 if verbose:

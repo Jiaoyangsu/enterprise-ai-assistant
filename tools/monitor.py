@@ -17,6 +17,7 @@
 """
 import argparse
 import json
+import math
 import os
 import time
 from collections import Counter
@@ -73,14 +74,27 @@ def workflow_label(rec: dict) -> str:
     return "问答"
 
 
+def pct(vals: list, p: float):
+    """百分位（最近邻），空列表返回 None。"""
+    if not vals:
+        return None
+    v = sorted(vals)
+    k = math.ceil(p / 100 * len(v)) - 1
+    return v[max(0, k)]
+
+
 def trace_stats(recs: list) -> dict:
-    """轨迹质量（只统计带 trace 字段的样本；无 trace 的旧数据跳过）。"""
+    """轨迹质量（只统计带 trace 字段的样本；无 trace 的旧数据跳过）。
+
+    只把带 tool 名的条目计为一步（answer 步是最终生成，不计入工具步数）；
+    并聚合每个 trace 条目的 llm_dur/tool_dur（自研侧新增的延迟归因字段）。"""
     samples = [r for r in recs if isinstance(r.get("trace"), list) and r["trace"]]
     n = len(samples)
     if n == 0:
         return {"n": 0}
-    steps = [len(r["trace"]) for r in samples]
-    tools = [len({t["tool"] for t in r["trace"]}) for r in samples]
+    tool_entries = [t for r in samples for t in r["trace"] if t.get("tool")]
+    steps = [len([t for t in r["trace"] if t.get("tool")]) for r in samples]
+    tools = [len({t["tool"] for t in r["trace"] if t.get("tool")}) for r in samples]
     repeat = 0          # 同题内相邻重复调用同一工具
     blocked = 0         # 白名单外/未知工具调用
     err = 0             # 工具返回 error 的步
@@ -89,7 +103,9 @@ def trace_stats(recs: list) -> dict:
     for r in samples:
         prev = None
         for t in r["trace"]:
-            name = t.get("tool") or ""
+            if not t.get("tool"):
+                continue
+            name = t.get("tool")
             obs = t.get("obs") or ""
             tool_counter[name] += 1
             if name == prev:
@@ -99,6 +115,10 @@ def trace_stats(recs: list) -> dict:
                 blocked += 1
             if '"error"' in obs or "error" in obs[:120]:
                 err += 1
+    llm_durs = [t["llm_dur"] for r in samples for t in r["trace"]
+                if isinstance(t.get("llm_dur"), (int, float))]
+    tool_durs = [t["tool_dur"] for r in samples for t in r["trace"]
+                 if isinstance(t.get("tool_dur"), (int, float))]
     return {
         "n": n,
         "steps_avg": round(sum(steps) / n, 2),
@@ -107,6 +127,8 @@ def trace_stats(recs: list) -> dict:
         "blocked_step_rate": round(blocked / max(total_steps, 1), 4),
         "tool_error_step_rate": round(err / max(total_steps, 1), 4),
         "top_tools": tool_counter.most_common(5),
+        "llm_dur_avg_s": round(sum(llm_durs) / len(llm_durs), 2) if llm_durs else None,
+        "tool_dur_avg_s": round(sum(tool_durs) / len(tool_durs), 2) if tool_durs else None,
     }
 
 
@@ -148,7 +170,10 @@ def main():
     print(f"    500 异常       {err500} ({err500 / max(web_total, 1):.1%})")
     print(f"    降级 503       {degraded} ({degraded / max(web_total, 1):.1%})")
     print(f"    低置信/无法确认 {low} ({low / max(web_total, 1):.1%})   <- 未完成任务信号")
-    print(f"    均耗时        {sum(elapsed) / max(len(elapsed), 1):.1f}s")
+    if elapsed:
+        print(f"    耗时(s)      均 {sum(elapsed) / len(elapsed):.1f}  "
+              f"P50 {pct(elapsed, 50):.1f}  P75 {pct(elapsed, 75):.1f}  "
+              f"P90 {pct(elapsed, 90):.1f}  P95 {pct(elapsed, 95):.1f}  P99 {pct(elapsed, 99):.1f}")
     print(f"    workflow      " + " | ".join(f"{k} {v}" for k, v in wf.most_common()))
     print(f"    活跃用户      " + " | ".join(f"{k}({v})" for k, v in users.most_common(8)))
 
@@ -167,6 +192,8 @@ def main():
         print(f"    白名单外调用率 {ts['blocked_step_rate']:.2%}")
         print(f"    工具报错率     {ts['tool_error_step_rate']:.2%}")
         print("    Top工具        " + " | ".join(f"{k}({v})" for k, v in ts["top_tools"]))
+        if ts.get("llm_dur_avg_s") is not None:
+            print(f"    单步 LLM 均耗时 {ts['llm_dur_avg_s']}s │ 单步工具均耗时 {ts['tool_dur_avg_s']}s")
     else:
         print("\n[3] 轨迹质量    暂无带 trace 样本（需在本次改动后于 web_app 产生会话）")
 

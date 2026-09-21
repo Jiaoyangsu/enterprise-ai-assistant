@@ -123,15 +123,28 @@ def log_feedback(rec: dict):
 
 
 def _feed_trace(trace: list | None) -> list:
-    """把 ReAct 轨迹压缩成摘要落盘（供轨迹质量分析，控制体积）。"""
+    """把 ReAct 轨迹压缩成摘要落盘（供轨迹质量分析，控制体积）。
+
+    在原始 tool/args/obs 上透传延迟归因字段（thought/ts/llm_dur/tool_dur 与 answer 步标记），
+    向后兼容旧的只含 tool/args/obs 的记录。"""
     out = []
     for t in trace or []:
         args = {k: (str(v)[:60]) for k, v in (t.get("args") or {}).items()}
-        out.append({
+        rec = {
             "tool": t.get("tool") or "",
             "args": args,
             "obs": (t.get("obs") or "")[:200],
-        })
+        }
+        if t.get("step"):
+            rec["step"] = t.get("step")
+        if t.get("kind") and t.get("step"):
+            rec["kind"] = t.get("kind")
+        if t.get("thought"):
+            rec["thought"] = str(t.get("thought") or "")[:200]
+        for k in ("ts", "llm_dur", "tool_dur"):
+            if t.get(k) is not None:
+                rec[k] = t.get(k)
+        out.append(rec)
     return out
 
 
@@ -783,12 +796,12 @@ class Handler(BaseHTTPRequestHandler):
                     if not guided:
                         ans = agent(question, model="qwen2.5:14b", trace=trace, allow=allow, user_ctx=usr, history=history)
                         out = {"answer": ans, "model": "qwen2.5:14b",
-                               "tools": [t["tool"] for t in trace],
+                               "tools": [t["tool"] for t in trace if t.get("tool")],
                                "allow": allow,
                                "elapsed_s": round(time.time() - t0, 1)}
                         log_feedback({"source": "web", "user": usr.get("name") if usr else None,
                                       "question": question,
-                                      "answer": ans, "tools": [t["tool"] for t in trace],
+                                      "answer": ans, "tools": [t["tool"] for t in trace if t.get("tool")],
                                       "trace": _feed_trace(trace),
                                       "elapsed_s": out["elapsed_s"], "status": 200})
                         queue_for_human(question, ans, "不确定性")
