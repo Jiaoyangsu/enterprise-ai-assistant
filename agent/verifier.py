@@ -247,6 +247,42 @@ def _denial_but_evidence(answer: str, blob: str) -> bool:
     return bool(_DENY_EVIDENCE_RE.search(blob))
 
 
+# 复读纠错指令：模型把纠正/回检提示原样（或改述）回吐，视为未作答（对齐 guard RESTATE_SIGS）
+RESTATE_SIGNATURES = ("无源断言", "用户指出", "上一轮回答", "证据回检", "修正后的新答案")
+
+
+def _restated(answer: str) -> bool:
+    return any(sig in (answer or "") for sig in RESTATE_SIGNATURES)
+
+
+# 串台/答非所问：回答主题与问题主题几乎无交集，却大量背书某段工具观测。
+# 取中文 2-gram 词元（跨英文/数字/标点断开），无需分词。
+_CJK = re.compile(r"[\u4e00-\u9fff]+")
+
+
+def _content_bigrams(text: str) -> set[str]:
+    out: set[str] = set()
+    for run in _CJK.findall(text or ""):
+        for i in range(len(run) - 1):
+            out.add(run[i:i + 2])
+    return out
+
+
+def _topic_drift(question: str, answer: str, blob: str) -> tuple[bool, str]:
+    """串台检测：question 与 answer 主题词几乎无交叠，但 answer 大段背书观测内容
+    ——模型绕过当前提问，转述了库里另一段显著内容（如问"祝贺金"答"年假隐私"）。"""
+    qb = _content_bigrams(question)
+    ab = _content_bigrams(answer)
+    if len(qb) < 4 or len(ab) < 4:
+        return False, ""
+    cover = len(qb & ab) / len(qb)
+    if cover >= 0.2:
+        return False, ""
+    if len(ab & _content_bigrams(blob)) < 2:
+        return False, ""  # 几乎未背书观测 → 属拒答/说明，放行
+    return True, "回答主题与问题无关，疑似把工具观测中的其他内容当作答复"
+
+
 def verify(question: str, trace, answer: str):
     """返回 {"ok", "verdict", "issues", "soft_notes", "docs_used", "num_claims", "bare_claims", "cn_claims"}。
 
@@ -287,6 +323,13 @@ def verify(question: str, trace, answer: str):
 
     if _denial_but_evidence(answer, blob):
         issues.append("回答称“未写明/未给出”，但工具返回中已有具体数值证据，疑似漏答")
+
+    if _restated(answer):
+        issues.append("回答复读了纠错指令而非作答，疑似把回检提示当成了问题")
+
+    drift, drift_txt = _topic_drift(question, answer or "", blob)
+    if drift:
+        issues.append(drift_txt)
 
     verdict = "fail" if issues else ("soft" if soft_notes else "ok")
     return {

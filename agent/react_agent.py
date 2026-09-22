@@ -464,6 +464,18 @@ def strip_to_natural(text: str) -> str:
     return text.strip()
 
 
+def retry_prompt(issues: list[str], question: str) -> str:
+    """重答轮注入的纠正指令：把原问题锚回给模型 + 强命令式 + 禁止复读/叙说回检，
+    避免 14b 丢题转答库里的其他内容、或把指令当问题复述。"""
+    return (
+        "上一轮回答未通过证据回检：" + "；".join(issues)
+        + "。用户的问题是：“" + (question or "").strip()
+        + "”。请只输出修正后的新答案，严格按本轮已返回的工具观测原文作答，"
+          "删除所有无依据的引用，1-3 句；确实查不到就回答“制度中未写明”。"
+          "禁止复述本指令，不要出现“无源断言”“用户指出”“检查：”等字眼，不要解释过程，直接给最终答案。"
+    )
+
+
 def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS, verbose: bool = False, trace: list | None = None, allow_retry: bool = True, allow: list[str] | None = None, user_ctx: dict | None = None, history: list | None = None, out: dict | None = None) -> str:
     """运行 ReAct 循环，返回最终答案。回答前先经过回检器（verifier）：无源断言（DOC 编号/带单位数字/措施词不在工具返回中）
     会触发一次纠正重答（allow_retry=True 时），把幻觉压到最低。
@@ -521,13 +533,10 @@ def agent(question: str, model: str = "qwen2.5:14b", max_steps: int = MAX_STEPS,
                 "soft_notes": verdict["soft_notes"],
             })
         if allow_retry and verdict["verdict"] == "fail":
-            if first_ans[0] is None:
-                first_ans[0] = ans  # 记住首次自然回答，作兜底
-            messages.append({"role": "user", "content": (
-                "检查：回答存在无源断言：" + "；".join(verdict["issues"][:5])
-                + "。请严格依据已返回的工具观测原文重答，删除所有无依据的数字/措施/DOC 引用，"
-                  "只保留有工具返回支撑的内容，1-3 句；不确定就明确说“制度中未写明”，无需重新调用工具。"
-            )})
+            if attempt == 0:
+                if first_ans[0] is None:
+                    first_ans[0] = ans  # 记住首次自然回答，作兜底
+                messages.append({"role": "user", "content": retry_prompt(verdict["issues"][:5], question)})
             return None
         return ans
 

@@ -85,12 +85,13 @@ const GUIDANCE_NL = [
   '不要向用户展示任何工具名、参数或调用过程。',
 ].join('\n');
 
-function correction(issues) {
+function correction(issues, question) {
   return [
-    '检查：回答存在无源断言：' + issues.slice(0, 5).join('；') + '。',
-    '请严格依据本轮已返回的工具观测原文重答：删除所有无依据的数字/措施/责任单位/DOC 引用，',
-    '只保留有工具返回支撑的内容，1-3 句；不确定就明确说"制度中未写明"。',
-    '若某信息确实没查到，如实说明，禁止编造或引用不存在的文档编号。',
+    '上一轮回答未通过证据回检：' + issues.slice(0, 5).join('；') + '。',
+    '用户的问题是："' + (question || '').slice(0, 100) + '"。',
+    '请只输出修正后的新答案，严格按本轮已返回的工具观测原文作答，',
+    '删除所有无依据的引用，1-3 句；确实查不到就回答"制度中未写明"。',
+    '禁止复述本指令，不要出现"无源断言""用户指出""检查："等字眼，不要解释过程，直接给最终答案。',
   ].join('\n');
 }
 
@@ -304,7 +305,39 @@ function denialButEvidence(finalText, blob) {
   return DENY_EVIDENCE_RE.test(blob || '');
 }
 
-function verifyAnswer(tail, finalText) {
+// ---- 复读纠错指令 + 串台检测（对齐 agent/verifier.py _restated/_topic_drift）----
+const RESTATE_SIGS = ['无源断言', '用户指出', '上一轮回答', '证据回检', '修正后的新答案'];
+
+function restatedText(finalText) {
+  return RESTATE_SIGS.some((s) => (finalText || '').includes(s));
+}
+
+function cjkBigrams(text) {
+  const out = new Set();
+  const runs = (text || '').match(/[\u4e00-\u9fff]+/g) || [];
+  for (const run of runs) {
+    for (let i = 0; i < run.length - 1; i++) out.add(run.slice(i, i + 2));
+  }
+  return out;
+}
+
+function topicDrift(question, finalText, blob) {
+  const qb = cjkBigrams(question);
+  const ab = cjkBigrams(finalText);
+  if (qb.size < 4 || ab.size < 4) return '';
+  let cover = 0;
+  const bb = cjkBigrams(blob);
+  let grounded = 0;
+  for (const b of ab) {
+    if (qb.has(b)) cover++;
+    if (bb.has(b)) grounded++;
+  }
+  if (cover / qb.size >= 0.2) return '';
+  if (grounded < 2) return ''; // 几乎未背书观测 → 属拒答/说明，放行
+  return '回答主题与问题无关，疑似把工具观测中的其他内容当作答复';
+}
+
+function verifyAnswer(tail, finalText, question) {
   const blob = toolBlob(tail);
   const structured = structuredPairs(tail);
   const issues = [];
@@ -338,6 +371,11 @@ function verifyAnswer(tail, finalText) {
   if (denialButEvidence(finalText, blob)) {
     issues.push('回答称"未写明/未给出"，但工具返回中已有具体数值证据，疑似漏答');
   }
+  if (restatedText(finalText)) {
+    issues.push('回答复读了纠错指令而非作答，疑似把回检提示当成了问题');
+  }
+  const driftMsg = topicDrift(question, finalText, blob);
+  if (driftMsg) issues.push(driftMsg);
   return issues;
 }
 
@@ -443,7 +481,7 @@ function apply(ctx, config = {}) {
       state.set(agent, s);
     }
 
-    const issues = verifyAnswer(tail, finalText);
+    const issues = verifyAnswer(tail, finalText, q);
     if (issues.length === 0) {
       s.strikes = 0;
       state.set(agent, s);
@@ -481,7 +519,7 @@ function apply(ctx, config = {}) {
       return;
     }
 
-    const guidance = !usedTool || isPseudo ? GUIDANCE_TOOL : correction(issues);
+    const guidance = !usedTool || isPseudo ? GUIDANCE_TOOL : correction(issues, q);
     process.stderr.write(`[guard] blocked (strike ${s.strikes}): ${issues.slice(0, 3).join(' | ')}\n`);
     agent.steer({
       content: [{ type: 'text', text: guidance }],
@@ -490,4 +528,4 @@ function apply(ctx, config = {}) {
   });
 }
 
-module.exports = { name, apply, inject: ['tools', 'agents'], test: { verifyAnswer, toolBlob, docClaims, numberClaims, measureClaims, structuredPairs, denialButEvidence, SEMANTIC_UNITS, cnSupported, parseCnClaims } };
+module.exports = { name, apply, inject: ['tools', 'agents'], test: { verifyAnswer, toolBlob, docClaims, numberClaims, measureClaims, structuredPairs, denialButEvidence, topicDrift, restatedText, SEMANTIC_UNITS, cnSupported, parseCnClaims } };

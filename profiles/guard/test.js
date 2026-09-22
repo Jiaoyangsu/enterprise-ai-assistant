@@ -58,5 +58,12 @@ check('bare-year-nosrc', g.verifyAnswer(bare13, '2024年起实行'), false);
 const refuseTrace = mk(JSON.stringify({ found: true, results: [{ id: 'DOC-101', title: '报销', content: '住宿标准200元' }] }));
 check('refuse-vague', g.verifyAnswer(refuseTrace, '建议咨询人力资源部了解详情'), false);
 
+// ===== 复读纠错指令 + 串台/答非所问（对齐 verifier _restated/_topic_drift）=====
+const t3 = mk(JSON.stringify({ found: true, results: [{ id: 'DOC-101', title: '培训', content: '为期 3 天' }] }));
+check('echo-restate', g.verifyAnswer(t3, '用户指出回答中可能存在无源断言，需要严格依据工具观测重答', '培训几天?'), false);
+const dtr = mk(JSON.stringify({ found: true, results: [{ id: 'DOC-200', title: '年假管理', content: '员工年假按入职年限计算，剩余天数按月累计，个人余额属隐私' }] }));
+check('drift-block', g.verifyAnswer(dtr, '张伟的年假剩余天数无法查询，这是个人隐私信息，请咨询张伟本人', '公司对员工结婚有祝贺金吗？'), false);
+check('drift-pass', g.verifyAnswer(dtr, '员工年假可按入职年限计算，余额属个人隐私不对外提供', '员工年假余额可以查吗？'), true);
+
 console.log(`\n结果：${pass}/${total} 通过，${total - pass} 失败`);
 process.exit(pass === total ? 0 : 1);
